@@ -368,6 +368,7 @@ RegisterCommand("WeaponReleaseContractSmokeTest", function(source, args)
                 passed = capabilities.features.nativeReload == true
                     and capabilities.features.ammunitionTypes == true
                     and capabilities.features.ammunitionSelection == true
+                    and capabilities.features.ammunitionManagement == true
                     and capabilities.features.ammoEscrow == true
                     and capabilities.features.pairAmmoEscrow == true
                     and capabilities.features.pairUnload == true
@@ -379,6 +380,8 @@ RegisterCommand("WeaponReleaseContractSmokeTest", function(source, args)
                     and routes["feather-weapons:ammo:sync"] == true
                     and routes["feather-weapons:ammo:pairSync"] == true
                     and routes["feather-weapons:ammo:unload"] == true
+                    and routes["feather-weapons:ammo:loadSlot"] == true
+                    and routes["feather-weapons:ammo:availability"] == true
                     and routes["feather-weapons:repair:select"] == true
             },
             {

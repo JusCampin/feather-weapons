@@ -118,6 +118,31 @@ check(AmmoService.SyncConsumption(1, context, {
 }).ok, 'Special ammo shot checkpoint')
 check(AmmoService.Unload(1, context).ok and stock.ammo_revolver_express == 19, 'Shot consumes one round')
 
+reset('revolver_cattleman', 'revolver_schofield')
+stock.ammo_revolver_regular = 50
+stock.ammo_revolver_express = 7
+local availability = AmmoService.GetInventoryAvailability(1, context)
+check(availability.ok and availability.value.quantities.ammo_revolver_regular == 50
+    and availability.value.quantities.ammo_revolver_express == 7
+    and availability.value.quantities.ammo_revolver_explosive == nil,
+    'Managed ammunition availability returns only owned stacks')
+local managedRuntime = WeaponRuntime.Get(1)
+local managedOffhand = managedRuntime.slots.offhand
+local managedLoad = AmmoService.LoadSlot(1, context, {
+    slot = 'offhand', ammunitionType = 'ammo_revolver_regular', amount = 50,
+    itemInstanceId = managedOffhand.itemInstanceId, generation = managedOffhand.generation
+})
+check(managedLoad.ok and items[1].metadata.ammo.loaded == 0
+    and items[2].metadata.ammo.loaded == 6 and items[2].metadata.ammo.reserve == 44,
+    'Managed load targets only the requested weapon slot')
+local managedUnload = AmmoService.Unload(1, context, 10, 'offhand', {
+    slot = 'offhand', itemInstanceId = managedOffhand.itemInstanceId,
+    generation = managedOffhand.generation
+})
+check(managedUnload.ok and items[2].metadata.ammo.loaded == 6
+    and items[2].metadata.ammo.reserve == 34 and stock.ammo_revolver_regular == 10,
+    'Managed unload returns ammunition from only the requested slot')
+
 for _, second in ipairs({ 'revolver_schofield', 'revolver_cattleman' }) do
     reset('revolver_cattleman', second)
     local oldGeneration = WeaponRuntime.Get(1).equipped.generation

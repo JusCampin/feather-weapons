@@ -26,6 +26,7 @@ function WeaponAPI.GetCapabilities()
             ammunition = InventoryAdapter.IsReady(),
             ammunitionTypes = true,
             ammunitionSelection = InventoryAdapter.IsReady(),
+            ammunitionManagement = InventoryAdapter.IsReady(),
             ammoEscrow = InventoryAdapter.IsReady(),
             pairAmmoEscrow = InventoryAdapter.IsReady(),
             mixedAmmoDualWield = true,

@@ -123,7 +123,7 @@ Config = {
     },
     Escrow = {
         maxTotal = 200,
-        refillAmount = 30
+        refillAmount = 50
     },
     Offhand = {
         enabled = true,
@@ -158,6 +158,11 @@ Config = {
             enabled = true,
             defaultKey = "F6",
             command = "weaponmods"
+        },
+        ammunition = {
+            enabled = true,
+            defaultKey = "F7",
+            command = "weaponammo"
         }
     }
 }
@@ -202,7 +207,7 @@ The following commands are server-console only:
 Run the inspection command first. Reconciliation is an explicit recovery action,
 not routine gameplay synchronization.
 
-Players can change Feather's registered bindings in their Cfx key-binding settings. Unload defaults to `U`, and weapon modifications to `F6`. Reload remains the native RedM `R` action and is not registered or intercepted by Feather. The modification menu can also be opened with `/weaponmods`.
+Players can change Feather's registered bindings in their Cfx key-binding settings. Unload defaults to `U`, weapon modifications to `F6`, and ammunition management to `F7`. Reload remains the native RedM `R` action and is not registered or intercepted by Feather. The menus can also be opened with `/weaponmods` and `/weaponammo`.
 
 ## Gameplay
 
@@ -229,6 +234,16 @@ loadout, returns the better-stocked slot's loaded and reserve cartridges to
 Inventory, and updates its metadata in one transaction. Repeated uses drain the
 other slot as well.
 
+### Ammunition management
+
+Press `F7` or use `/weaponammo` to select a specific equipped weapon. The menu
+shows its ammunition type and exact loaded, reserve, and total ownership. Load
+up to one 50-cartridge Inventory stack into that slot, unload 10 cartridges, or
+unload the slot completely. Load choices are limited to compatible ammunition
+the character currently owns and show the available quantity. A different
+ammunition type can be selected after that weapon has been emptied. Shared
+native ammo pools do not change per-weapon Inventory ownership.
+
 ### Condition and repair
 
 Weapon condition is derived from RedM's native maintenance state; ammunition
@@ -246,7 +261,8 @@ Attachment installation and removal require proximity to a configured gunsmith b
 | Setting | Value |
 | --- | --- |
 | Capacity | 6 rounds |
-| Escrow ceiling | 30 rounds total |
+| Escrow ceiling | 200 rounds per shared native ammunition pool |
+| Managed load action | Up to 50 rounds |
 | Ammunition | Standard revolver cartridges |
 | Maximum condition | 100 |
 | Wear | RedM native degradation (usage and environment) |

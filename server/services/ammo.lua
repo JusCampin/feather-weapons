@@ -314,20 +314,170 @@ function AmmoService.Escrow(source, rpcContext, amount, ammunitionType)
     return result
 end
 
-function AmmoService.Unload(source, rpcContext, requested)
+function AmmoService.LoadSlot(source, rpcContext, params)
+    params = type(params) == "table" and params or {}
+    local slot = WeaponRuntime.NormalizeSlot(params.slot)
+    local equipped, failure = GetEquipped(source, rpcContext, slot)
+    if not equipped then return failure end
+    local leaseFailure = ValidateLease(source, equipped, rpcContext, params)
+    if leaseFailure then return leaseFailure end
+
+    local ammunitionType = params.ammunitionType
+    local ammunition = DefinitionRegistry.Get("ammunition", ammunitionType)
+    if not ammunition.ok then return ammunition end
+    local definitionResult = DefinitionRegistry.Get("weapon", equipped.definitionId)
+    if not definitionResult.ok then return definitionResult end
+    local definition = definitionResult.value
+    if not WeaponValidation.AcceptsAmmunition(definition, ammunitionType) then
+        return WeaponResult.Error(WeaponErrors.ITEM_INVALID,
+            "This ammunition is not compatible with the selected weapon", { slot = slot },
+            rpcContext.correlationId)
+    end
+
+    local requested = math.floor(tonumber(params.amount)
+        or tonumber(Config.Escrow and Config.Escrow.refillAmount) or 30)
+    if requested < 1 then
+        return WeaponResult.Error(WeaponErrors.ITEM_INVALID,
+            "Ammunition amount must be a positive integer", nil, rpcContext.correlationId)
+    end
+
+    local runtime = WeaponRuntime.Get(source)
+    local otherPoolTotal = 0
+    for _, candidate in ipairs(WeaponConstants.LoadoutSlots) do
+        local other = runtime and runtime.slots and runtime.slots[candidate] or nil
+        if candidate ~= slot and other
+            and other.nativeAmmoName == ammunition.value.nativeAmmoName then
+            otherPoolTotal = otherPoolTotal + (tonumber(other.ammo) or 0)
+        end
+    end
+
+    local context = Context(source, rpcContext, "slot_ammo_load")
+    local transactionResult = InventoryAdapter.Transaction(context, function(tx)
+        local item = tx:GetItemForUpdate(equipped.itemInstanceId)
+        if not item then
+            return WeaponResult.Error(WeaponErrors.ITEM_NOT_OWNED,
+                "Selected weapon is no longer owned", nil, context.correlationId)
+        end
+        local metadataResult = WeaponMetadata.Validate(item.metadata, definition, context.correlationId)
+        if not metadataResult.ok then return metadataResult end
+
+        local loaded = math.max(0, math.floor(tonumber(item.metadata.ammo.loaded) or 0))
+        local reserve = math.max(0, math.floor(tonumber(item.metadata.ammo.reserve) or 0))
+        local total = loaded + reserve
+        local previousType = item.metadata.ammo.type or definition.ammunitionType
+        if previousType ~= ammunitionType and total > 0 then
+            return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
+                "Unload this weapon before changing its ammunition type", { slot = slot },
+                context.correlationId)
+        end
+
+        local maxTotal = WeaponValidation.EscrowMaximum(definition, ammunitionType)
+        local needed = maxTotal - total - otherPoolTotal
+        local available = tx:GetQuantity(ammunition.value.itemName)
+        local moved = math.min(requested, needed, available)
+        if moved <= 0 then
+            return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
+                "No compatible ammunition can enter this weapon", {
+                    slot = slot, available = available, capacity = math.max(0, needed)
+                }, context.correlationId)
+        end
+        if not tx:RemoveQuantity(ammunition.value.itemName, moved) then
+            return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
+                "Ammunition changed during loading", nil, context.correlationId)
+        end
+
+        local nextTotal = total + moved
+        local nextLoaded = loaded
+        if total == 0 then nextLoaded = math.min(definition.capacity, nextTotal) end
+        item.metadata.ammo.type = ammunitionType
+        item.metadata.ammo.loaded = nextLoaded
+        item.metadata.ammo.reserve = nextTotal - nextLoaded
+        item.metadata.ammo.chambered = nextLoaded > 0
+        if not tx:SetMetadata(item.id, item.metadata, item.metadataRevision) then
+            return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
+                "Weapon metadata changed during ammunition loading", nil, context.correlationId)
+        end
+        return {
+            slot = slot,
+            itemInstanceId = item.id,
+            ammunitionType = ammunitionType,
+            nativeAmmoName = ammunition.value.nativeAmmoName,
+            total = nextTotal,
+            loaded = nextLoaded,
+            reserve = nextTotal - nextLoaded,
+            moved = moved,
+            inventoryAmmo = tx:GetQuantity(ammunition.value.itemName),
+            typeChanged = previousType ~= ammunitionType
+        }
+    end)
+    if not transactionResult.ok then return transactionResult end
+
+    local value = transactionResult.value
+    if value.typeChanged then
+        WeaponRuntime.SetSlotAmmunitionType(source, rpcContext.sessionId, slot, value.ammunitionType)
+    end
+    WeaponRuntime.SetSlotAmmo(source, rpcContext.sessionId, slot,
+        value.total, value.loaded, rpcContext.correlationId)
+    local result = WeaponResult.Ok(value, rpcContext.correlationId)
+    result.reconcile = value.typeChanged
+    return result
+end
+
+function AmmoService.GetInventoryAvailability(source, rpcContext)
+    local runtime = WeaponRuntime.Get(source)
+    if not runtime or runtime.sessionId ~= rpcContext.sessionId then
+        return WeaponResult.Error(WeaponErrors.SESSION_EXPIRED,
+            "Character session is no longer active", nil, rpcContext.correlationId)
+    end
+    local context = Context(source, rpcContext, "ammunition_menu")
+    local transactionResult = InventoryAdapter.Transaction(context, function(tx)
+        -- The Inventory adapter scopes quantity reads through an owned weapon
+        -- instance so it can resolve the character inventory ID.
+        local anchor = nil
+        for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
+            if runtime.slots and runtime.slots[slot] then
+                anchor = runtime.slots[slot]
+                break
+            end
+        end
+        if not anchor or not tx:GetItemForUpdate(anchor.itemInstanceId) then
+            return WeaponResult.Error(WeaponErrors.ITEM_NOT_OWNED,
+                "An equipped weapon is required to inspect ammunition", nil,
+                context.correlationId)
+        end
+        local quantities = {}
+        for id, definition in pairs(WeaponDefinitionCatalog.ammunition or {}) do
+            local quantity = math.max(0,
+                math.floor(tonumber(tx:GetQuantity(definition.itemName)) or 0))
+            if quantity > 0 then quantities[id] = quantity end
+        end
+        return quantities
+    end)
+    if not transactionResult.ok then return transactionResult end
+    return WeaponResult.Ok({ quantities = transactionResult.value }, rpcContext.correlationId)
+end
+
+function AmmoService.Unload(source, rpcContext, requested, requestedSlot, lease)
     local runtime = WeaponRuntime.Get(source)
     local slots = runtime and runtime.slots or nil
-    local slot = nil
-    for _, candidate in ipairs(WeaponConstants.LoadoutSlots) do
-        local equipped = slots and slots[candidate] or nil
-        if equipped and (not slot
-            or (tonumber(equipped.ammo) or 0) > (tonumber(slots[slot].ammo) or 0)) then
-            slot = candidate
+    local slot = WeaponRuntime.NormalizeSlot(requestedSlot)
+    if not slot then
+        for _, candidate in ipairs(WeaponConstants.LoadoutSlots) do
+            local equipped = slots and slots[candidate] or nil
+            if equipped and (not slot
+                or (tonumber(equipped.ammo) or 0) > (tonumber(slots[slot].ammo) or 0)) then
+                slot = candidate
+            end
         end
     end
     slot = slot or "primary"
     local equipped, failure = GetEquipped(source, rpcContext, slot)
     if not equipped then return failure end
+    if lease then
+        lease.slot = slot
+        local leaseFailure = ValidateLease(source, equipped, rpcContext, lease)
+        if leaseFailure then return leaseFailure end
+    end
     if requested ~= nil then requested = math.floor(tonumber(requested) or -1) end
     if requested ~= nil and requested < 1 then
         return WeaponResult.Error(WeaponErrors.ITEM_INVALID, "Ammunition amount must be a positive integer", nil,
@@ -586,8 +736,17 @@ function AmmoService.SyncPair(source, rpcContext, params)
 end
 
 FeatherCore.RPC.Register("feather-weapons:ammo:unload", function(params, respond, source, context)
-    respond(AmmoService.Unload(source, context, params and params.amount))
+    respond(AmmoService.Unload(source, context, params and params.amount,
+        params and params.slot, params and params.itemInstanceId and params or nil))
 end, { requireCharacter = true, windowMs = 1000, maxCalls = 4, maxPayloadBytes = 128 })
+
+FeatherCore.RPC.Register("feather-weapons:ammo:loadSlot", function(params, respond, source, context)
+    respond(AmmoService.LoadSlot(source, context, params))
+end, { requireCharacter = true, windowMs = 1000, maxCalls = 4, maxPayloadBytes = 384 })
+
+FeatherCore.RPC.Register("feather-weapons:ammo:availability", function(_, respond, source, context)
+    respond(AmmoService.GetInventoryAvailability(source, context))
+end, { requireCharacter = true, windowMs = 1000, maxCalls = 4, maxPayloadBytes = 64 })
 
 FeatherCore.RPC.Register("feather-weapons:ammo:sync", function(params, respond, source, context)
     respond(AmmoService.SyncConsumption(source, context, params))

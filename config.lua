@@ -26,7 +26,8 @@ Config = {
         -- Ammunition definitions may impose a smaller native-pool maximum.
         maxTotal = 200,
         -- Cartridges moved by one Inventory ammunition use.
-        refillAmount = 30
+        -- Match one standard Inventory ammunition stack per load action.
+        refillAmount = 50
     },
     Offhand = {
         -- Disable to run this server in primary-weapon-only mode.
@@ -96,6 +97,11 @@ Config = {
             enabled = true,
             defaultKey = "F6",
             command = "weaponmods"
+        },
+        ammunition = {
+            enabled = true,
+            defaultKey = "F7",
+            command = "weaponammo"
         }
     }
 }
