@@ -114,6 +114,8 @@ RegisterCommand("WeaponDualSlotContractSmokeTest", function(source, args)
         local runtime = targetSource and WeaponRuntime.Get(targetSource) or nil
         local primary = runtime and runtime.slots and runtime.slots.primary or nil
         local offhand = runtime and runtime.slots and runtime.slots.offhand or nil
+        local shoulder = runtime and runtime.slots and runtime.slots.shoulder or nil
+        local back = runtime and runtime.slots and runtime.slots.back or nil
         local sessionId = runtime and runtime.sessionId or nil
         local capabilities = WeaponAPI.GetCapabilities()
         local tests = {
@@ -122,6 +124,8 @@ RegisterCommand("WeaponDualSlotContractSmokeTest", function(source, args)
                 passed = Config.Inventory.equipmentSlots
                     and Config.Inventory.equipmentSlots.primary == Config.Inventory.equipmentSlot
                     and Config.Inventory.equipmentSlots.offhand ~= Config.Inventory.equipmentSlots.primary
+                    and Config.Inventory.equipmentSlots.shoulder ~= Config.Inventory.equipmentSlots.primary
+                    and Config.Inventory.equipmentSlots.back ~= Config.Inventory.equipmentSlots.shoulder
             },
             {
                 name = "slot runtime initialized",
@@ -136,7 +140,10 @@ RegisterCommand("WeaponDualSlotContractSmokeTest", function(source, args)
                 passed = capabilities.features.namedEquipmentSlots == true
                     and capabilities.features.dualWield == true
                     and capabilities.features.offhandEnabled == true
-                    and capabilities.features.matchingHashDualWield == true
+                    and capabilities.features.matchingHashDualWield == false
+                    and capabilities.features.definitionGatedMatchingPairs == false
+                    and capabilities.features.fourSlotLoadout == true
+                    and capabilities.features.mixedAmmoDualWield == true
             },
             {
                 name = "pair ammo capability",
@@ -174,6 +181,12 @@ RegisterCommand("WeaponDualSlotContractSmokeTest", function(source, args)
                     and DefinitionRegistry.Get("weapon", "revolver_schofield").ok == true
             },
             {
+                name = "matching hash rejection policy",
+                passed = DefinitionRegistry.Get("weapon", "revolver_cattleman").value.matchingPairSupported == nil
+                    and DefinitionRegistry.Get("weapon", "pistol_m1899").value.matchingPairSupported == nil
+                    and DefinitionRegistry.Get("weapon", "pistol_mauser").value.matchingPairSupported == nil
+            },
+            {
                 name = "slot item identities distinct",
                 passed = not offhand or (primary ~= nil
                     and tostring(primary.itemInstanceId) ~= tostring(offhand.itemInstanceId))
@@ -189,6 +202,18 @@ RegisterCommand("WeaponDualSlotContractSmokeTest", function(source, args)
                 passed = not offhand or (targetSource ~= nil and sessionId ~= nil
                     and WeaponRuntime.MatchesLease(targetSource, sessionId,
                         offhand.itemInstanceId, offhand.generation, "offhand"))
+            },
+            {
+                name = "shoulder lease scoped",
+                passed = not shoulder or (targetSource ~= nil and sessionId ~= nil
+                    and WeaponRuntime.MatchesLease(targetSource, sessionId,
+                        shoulder.itemInstanceId, shoulder.generation, "shoulder"))
+            },
+            {
+                name = "back lease scoped",
+                passed = not back or (targetSource ~= nil and sessionId ~= nil
+                    and WeaponRuntime.MatchesLease(targetSource, sessionId,
+                        back.itemInstanceId, back.generation, "back"))
             }
         }
         local passed = 0
@@ -197,9 +222,10 @@ RegisterCommand("WeaponDualSlotContractSmokeTest", function(source, args)
             print(("[WeaponDualSlotContractSmokeTest] %-29s %s"):format(
                 test.name, test.passed and "PASS" or "FAIL"))
         end
-        print(("[WeaponDualSlotContractSmokeTest] done %d/%d passed source=%s primary=%s offhand=%s")
+        print(("[WeaponDualSlotContractSmokeTest] done %d/%d passed source=%s primary=%s offhand=%s shoulder=%s back=%s")
             :format(passed, #tests, tostring(targetSource),
-                tostring(primary and primary.itemInstanceId), tostring(offhand and offhand.itemInstanceId)))
+                tostring(primary and primary.itemInstanceId), tostring(offhand and offhand.itemInstanceId),
+                tostring(shoulder and shoulder.itemInstanceId), tostring(back and back.itemInstanceId)))
     end, true)
 
 if Config.DevMode then
@@ -272,7 +298,7 @@ RegisterCommand("WeaponMetadataInspect", function(source, args)
             tostring(targetSource), tostring(value.characterId)))
         return
     end
-    for _, slot in ipairs({ "primary", "offhand" }) do
+    for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
         local item = value.slots and value.slots[slot] or nil
         print(("[WeaponMetadataInspect] PASS source=%s slot=%s equipped=%s item=%s definition=%s serial=%s generation=%s total=%s loaded=%s reserve=%s condition=%s attachments=%s runtimeMatch=%s")
         :format(
@@ -299,7 +325,7 @@ RegisterCommand("WeaponReconcile", function(source, args)
             tostring(result.error and result.error.code), tostring(result.error and result.error.message)))
         return
     end
-    for _, slot in ipairs({ "primary", "offhand" }) do
+    for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
         local equipped = result.value.slots and result.value.slots[slot] or nil
         print(("[WeaponReconcile] PASS source=%s slot=%s equipped=%s item=%s generation=%s total=%s loaded=%s reserve=%s condition=%s"):format(
             tostring(targetSource), slot, tostring(equipped ~= nil),

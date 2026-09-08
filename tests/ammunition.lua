@@ -69,16 +69,17 @@ function InventoryAdapter.Transaction(_, callback)
     items, stock = staged, quantities
     return WeaponResult.Ok(result)
 end
-local function reset(weapon, second)
+local function reset(weapon, second, shoulder, back)
     items, stock, rejectBatch, rejectTransaction = {}, {}, false, false
     WeaponRuntime.Begin({ source = 1, characterId = 1, sessionId = 'test' })
-    for index, id in ipairs({ weapon, second }) do
+    local loadoutSlots = { 'primary', 'offhand', 'shoulder', 'back' }
+    for index, id in ipairs({ weapon, second, shoulder, back }) do
         local definition = DefinitionRegistry.Get('weapon', id).value
         local metadata = WeaponMetadata.Build(definition, { serialNumber = 'TEST-' .. index })
         assert(metadata.ok)
         items[index] = { id = index, metadata = metadata.value, metadataRevision = 1 }
         assert(WeaponRuntime.RestoreEquipped(1, 'test', items[index], definition,
-            'test', index == 1 and 'primary' or 'offhand').ok)
+            'test', loadoutSlots[index]).ok)
     end
 end
 local passed = 0
@@ -137,6 +138,140 @@ for _, second in ipairs({ 'revolver_schofield', 'revolver_cattleman' }) do
     stock.ammo_revolver_high_velocity = 10
     check(AmmoService.Escrow(1, context, 10, 'ammo_revolver_high_velocity').ok, 'Empty pair switches')
 end
+
+-- Different native ammo pools coexist without requiring both weapons to
+-- select or consume the same Inventory ammunition definition.
+reset('revolver_cattleman', 'pistol_volcanic')
+stock.ammo_revolver_regular = 10
+stock.ammo_pistol_regular = 10
+check(AmmoService.Escrow(1, context, 10, 'ammo_revolver_regular').ok,
+    'Mixed pair loads revolver ammunition')
+check(items[1].metadata.ammo.loaded + items[1].metadata.ammo.reserve == 10
+    and items[2].metadata.ammo.loaded + items[2].metadata.ammo.reserve == 0,
+    'Revolver ammunition changes only compatible slot')
+check(AmmoService.Escrow(1, context, 10, 'ammo_pistol_regular').ok,
+    'Mixed pair loads pistol ammunition')
+check(items[1].metadata.ammo.type == 'ammo_revolver_regular'
+    and items[2].metadata.ammo.type == 'ammo_pistol_regular',
+    'Mixed pair retains independent ammunition types')
+local mixedRuntime = WeaponRuntime.Get(1)
+local mixedCheckpoint = AmmoService.SyncPair(1, context, { total = 18, slots = {
+    primary = { itemInstanceId = 1, generation = mixedRuntime.slots.primary.generation,
+        loaded = 5, consumed = 1 },
+    offhand = { itemInstanceId = 2, generation = mixedRuntime.slots.offhand.generation,
+        loaded = 7, consumed = 1 }
+} })
+check(mixedCheckpoint.ok,
+    ('Mixed ammo pair checkpoint conserves both pools (%s: %s)'):format(
+        tostring(mixedCheckpoint.error and mixedCheckpoint.error.code),
+        tostring(mixedCheckpoint.error and mixedCheckpoint.error.message)))
+check(AmmoService.Unload(1, context).ok and AmmoService.Unload(1, context).ok
+    and stock.ammo_revolver_regular == 9 and stock.ammo_pistol_regular == 9,
+    'Mixed pair unload returns exact ammunition families')
+
+reset('revolver_cattleman', 'pistol_volcanic', 'rifle_springfield', 'shotgun_pump')
+check(EquipService.ValidateConfiguration().ok, 'Mixed loadout configuration valid')
+local fullRuntime = WeaponRuntime.Get(1)
+check(fullRuntime.slots.primary ~= nil and fullRuntime.slots.offhand ~= nil
+    and fullRuntime.slots.shoulder ~= nil and fullRuntime.slots.back ~= nil,
+    'Four sidearm and long-gun runtime slots coexist')
+reset('revolver_cattleman', 'pistol_volcanic', 'repeater_carbine', 'repeater_evans')
+assert(WeaponRuntime.Unequip(1, 'test', 'test', 'back').ok)
+local conflictingLonggun = EquipService.Request(1, context, 4, 'back')
+check(not conflictingLonggun.ok
+    and conflictingLonggun.error.code == WeaponErrors.OPERATION_CONFLICT,
+    'Second long gun rejects a duplicate native ammunition type')
+assert(WeaponRuntime.RestoreEquipped(1, 'test', items[4],
+    DefinitionRegistry.Get('weapon', 'repeater_evans').value, 'test', 'back').ok)
+stock.ammo_repeater_express = 10
+local ambiguousLonggunAmmo = AmmoService.Escrow(1, context, 10, 'ammo_repeater_express')
+check(not ambiguousLonggunAmmo.ok
+    and ambiguousLonggunAmmo.error.code == WeaponErrors.OPERATION_CONFLICT,
+    'Generic ammunition loading rejects two compatible long guns')
+reset('revolver_cattleman', 'pistol_volcanic', 'repeater_carbine', 'repeater_evans')
+for index, values in pairs({ [3] = { loaded = 7, reserve = 100 },
+        [4] = { loaded = 26, reserve = 70 } }) do
+    items[index].metadata.ammo.type = 'ammo_repeater_express'
+    items[index].metadata.ammo.loaded = values.loaded
+    items[index].metadata.ammo.reserve = values.reserve
+    WeaponRuntime.SetSlotAmmunitionType(1, 'test', index == 3 and 'shoulder' or 'back',
+        'ammo_repeater_express')
+    WeaponRuntime.SetSlotAmmo(1, 'test', index == 3 and 'shoulder' or 'back',
+        values.loaded + values.reserve, values.loaded, 'test')
+end
+stock.ammo_repeater_express = 0
+check(AmmoService.NormalizeSharedPools(1, context).ok
+    and items[3].metadata.ammo.loaded + items[3].metadata.ammo.reserve
+        + items[4].metadata.ammo.loaded + items[4].metadata.ammo.reserve == 200
+    and stock.ammo_repeater_express == 3,
+    'Shared loaded overflow returns to Inventory during recovery')
+local longgunRuntime = WeaponRuntime.Get(1)
+local longgunReload = AmmoService.SyncPair(1, context, {
+    total = 200,
+    slotNames = { 'shoulder', 'back' },
+    slots = {
+        shoulder = { itemInstanceId = 3, generation = longgunRuntime.slots.shoulder.generation,
+            loaded = 26, consumed = 0 },
+        back = { itemInstanceId = 4, generation = longgunRuntime.slots.back.generation,
+            loaded = 14, consumed = 0 }
+    }
+})
+check(not longgunReload.ok
+    and items[3].metadata.ammo.loaded == 7
+    and items[3].metadata.ammo.reserve == 100
+    and items[4].metadata.ammo.loaded == 26
+    and items[4].metadata.ammo.reserve == 67,
+    'Distinct long guns reject native reload redistribution across escrow')
+local longgunShot = AmmoService.SyncPair(1, context, {
+    total = 199,
+    slotNames = { 'shoulder', 'back' },
+    slots = {
+        shoulder = { itemInstanceId = 3, generation = longgunRuntime.slots.shoulder.generation,
+            loaded = 6, consumed = 1 },
+        back = { itemInstanceId = 4, generation = longgunRuntime.slots.back.generation,
+            loaded = 26, consumed = 0 }
+    }
+})
+check(longgunShot.ok
+    and items[3].metadata.ammo.loaded == 6
+    and items[3].metadata.ammo.reserve == 100
+    and items[4].metadata.ammo.loaded == 26
+    and items[4].metadata.ammo.reserve == 67,
+    'Distinct long-gun shared pool preserves per-item reserve ownership')
+
+-- A capped RedM pistol pool is only a runtime window. Pair checkpoints use
+-- Feather ownership minus confirmed shots, not the smaller native pool total.
+reset('pistol_m1899', 'pistol_m1899')
+for index, values in ipairs({ { loaded = 0, reserve = 99 }, { loaded = 8, reserve = 93 } }) do
+    items[index].metadata.ammo.type = 'ammo_pistol_express'
+    items[index].metadata.ammo.loaded = values.loaded
+    items[index].metadata.ammo.reserve = values.reserve
+    local slot = index == 1 and 'primary' or 'offhand'
+    WeaponRuntime.SetSlotAmmunitionType(1, 'test', slot, 'ammo_pistol_express')
+    assert(WeaponRuntime.SetSlotAmmo(1, 'test', slot,
+        values.loaded + values.reserve, values.loaded, 'test').ok)
+end
+local pistolRuntime = WeaponRuntime.Get(1)
+local pistolReload = AmmoService.SyncPair(1, context, { total = 200, slots = {
+    primary = { itemInstanceId = 1, generation = pistolRuntime.slots.primary.generation,
+        loaded = 8, consumed = 0 },
+    offhand = { itemInstanceId = 2, generation = pistolRuntime.slots.offhand.generation,
+        loaded = 8, consumed = 0 }
+} })
+check(pistolReload.ok
+    and items[1].metadata.ammo.loaded == 8
+    and items[2].metadata.ammo.loaded == 8,
+    'Capped pistol window persists native reload without reducing ownership')
+local pistolShot = AmmoService.SyncPair(1, context, { total = 199, slots = {
+    primary = { itemInstanceId = 1, generation = pistolRuntime.slots.primary.generation,
+        loaded = 7, consumed = 1 },
+    offhand = { itemInstanceId = 2, generation = pistolRuntime.slots.offhand.generation,
+        loaded = 8, consumed = 0 }
+} })
+check(pistolShot.ok
+    and items[1].metadata.ammo.loaded + items[1].metadata.ammo.reserve
+        + items[2].metadata.ammo.loaded + items[2].metadata.ammo.reserve == 199,
+    'Capped pistol window subtracts only confirmed GUID shots')
 
 reset('revolver_cattleman', 'revolver_schofield')
 rejectBatch = true

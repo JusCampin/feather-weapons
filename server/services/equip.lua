@@ -57,18 +57,80 @@ function EquipService.ValidateOwnedItem(context, itemInstanceId)
 end
 
 local function ValidateSlotEligibility(source, slot, definition, correlationId, metadata)
+    local runtime = WeaponRuntime.Get(source)
+    local configured = definition.slot == "sidearm"
+        and (Config.Loadout and Config.Loadout.sidearmSlots)
+        or (definition.slot == "longgun" and Config.Loadout and Config.Loadout.longgunSlots or nil)
+    if slot == nil or slot == "auto" then
+        for _, candidate in ipairs(configured or {}) do
+            if not (runtime and runtime.slots and runtime.slots[candidate]) then
+                slot = candidate
+                break
+            end
+        end
+        if slot == nil or slot == "auto" then
+            return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
+                "Every compatible weapon slot is occupied", { weaponSlot = definition.slot }, correlationId)
+        end
+    end
     slot = WeaponRuntime.NormalizeSlot(slot)
     if not slot then
         return WeaponResult.Error(WeaponErrors.ITEM_INVALID,
             "Weapon equipment slot is invalid", nil, correlationId)
     end
-    if slot == "primary" then return WeaponResult.Ok(slot, correlationId) end
+    local expectedCategory = WeaponConstants.SidearmSlots[slot] and "sidearm"
+        or (WeaponConstants.LonggunSlots[slot] and "longgun" or nil)
+    if definition.slot ~= expectedCategory then
+        return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
+            "That weapon cannot use the requested loadout slot", {
+                slot = slot, weaponSlot = definition.slot
+            }, correlationId)
+    end
+    for _, otherSlot in ipairs(WeaponConstants.LoadoutSlots) do
+        local other = runtime and runtime.slots and runtime.slots[otherSlot] or nil
+        if other and otherSlot ~= slot and other.nativeWeaponName == definition.nativeWeaponName then
+            return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
+                "Two weapons with the same native model cannot be equipped together", {
+                    slot = slot,
+                    otherSlot = otherSlot,
+                    definitionId = definition.id,
+                    nativeWeaponName = definition.nativeWeaponName
+                }, correlationId)
+        end
+    end
+    if expectedCategory == "longgun" then
+        local ammunitionType = metadata.ammo.type or definition.ammunitionType
+        local ammunition = DefinitionRegistry.Get("ammunition", ammunitionType)
+        if not ammunition.ok then return ammunition end
+        for _, otherSlot in ipairs(Config.Loadout.longgunSlots or {}) do
+            local other = runtime and runtime.slots and runtime.slots[otherSlot] or nil
+            if other and otherSlot ~= slot
+                and other.nativeAmmoName == ammunition.value.nativeAmmoName then
+                return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
+                    "Shoulder and back weapons must use different ammunition types", {
+                        slot = slot,
+                        otherSlot = otherSlot,
+                        ammunitionType = ammunitionType,
+                        nativeAmmoName = ammunition.value.nativeAmmoName
+                    }, correlationId)
+            end
+        end
+    end
+    if slot ~= "offhand" then return WeaponResult.Ok(slot, correlationId) end
 
     local settings = Config.Offhand or {}
     if settings.enabled ~= true then
         return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
             "Offhand weapons are disabled on this server", nil, correlationId)
     end
+    local primary = runtime and runtime.slots and runtime.slots.primary or nil
+    if not primary then
+        return WeaponResult.Error(WeaponErrors.NOT_EQUIPPED,
+            "Equip a primary weapon before equipping a second weapon", nil, correlationId)
+    end
+    local primaryDefinition = DefinitionRegistry.Get("weapon", primary.definitionId)
+    if not primaryDefinition.ok then return primaryDefinition end
+
     if type(settings.allowedFamilies) ~= "table"
         or settings.allowedFamilies[definition.family] ~= true then
         return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
@@ -82,18 +144,6 @@ local function ValidateSlotEligibility(source, slot, definition, correlationId, 
             { weaponSlot = definition.slot }, correlationId)
     end
 
-    local runtime = WeaponRuntime.Get(source)
-    local primary = runtime and runtime.slots and runtime.slots.primary or nil
-    if not primary then
-        return WeaponResult.Error(WeaponErrors.NOT_EQUIPPED,
-            "Equip a primary weapon before equipping an offhand weapon", nil, correlationId)
-    end
-    local primaryDefinition = DefinitionRegistry.Get("weapon", primary.definitionId)
-    if not primaryDefinition.ok
-        or primary.ammunitionType ~= (metadata.ammo.type or definition.ammunitionType) then
-        return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT,
-            "Equipped weapon pairs must use the same ammunition type", nil, correlationId)
-    end
     return WeaponResult.Ok(slot, correlationId)
 end
 
@@ -129,6 +179,31 @@ function EquipService.ValidateConfiguration()
             "Offhand holster attachment points are invalid")
     end
     if settings.enabled ~= true then return WeaponResult.Ok(true) end
+    if type(Config.Loadout) ~= "table"
+        or type(Config.Loadout.sidearmSlots) ~= "table"
+        or type(Config.Loadout.longgunSlots) ~= "table" then
+        return WeaponResult.Error(WeaponErrors.INVALID_DEFINITION,
+            "Weapon loadout configuration is invalid")
+    end
+    for _, slot in ipairs(Config.Loadout.sidearmSlots) do
+        if not WeaponConstants.SidearmSlots[slot] then
+            return WeaponResult.Error(WeaponErrors.INVALID_DEFINITION,
+                "Sidearm loadout slot configuration is invalid")
+        end
+    end
+    for _, slot in ipairs(Config.Loadout.longgunSlots) do
+        if not WeaponConstants.LonggunSlots[slot] then
+            return WeaponResult.Error(WeaponErrors.INVALID_DEFINITION,
+                "Long-gun loadout slot configuration is invalid")
+        end
+    end
+    local shoulderPoint = tonumber(Config.Loadout.shoulderAttachPoint)
+    local backPoint = tonumber(Config.Loadout.backAttachPoint)
+    if not shoulderPoint or shoulderPoint % 1 ~= 0
+        or not backPoint or backPoint % 1 ~= 0 or shoulderPoint == backPoint then
+        return WeaponResult.Error(WeaponErrors.INVALID_DEFINITION,
+            "Long-gun native attachment points are invalid")
+    end
 
     local definitions = DefinitionRegistry.List("weapon")
     if not definitions.ok then return definitions end
@@ -205,14 +280,12 @@ function EquipService.Unequip(source, rpcContext, slot)
             TriggerClientEvent("feather-weapons:client:forceReconcile", source)
             return promoted
         end
-        TriggerClientEvent("feather-weapons:client:clear", source)
         return promoted
     end
     local persistResult = InventoryAdapter.SetEquippedSlotForCharacter(context, slot, nil)
     if not persistResult.ok then return persistResult end
 
     local result = WeaponRuntime.Unequip(source, rpcContext.sessionId, rpcContext.correlationId, slot)
-    if result.ok then TriggerClientEvent("feather-weapons:client:clear", source) end
     return result
 end
 

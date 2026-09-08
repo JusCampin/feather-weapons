@@ -15,6 +15,12 @@ local DuplicateDefinitions = {}
 -- never fail.
 local InventoryCapabilities = nil
 
+local function IsCallable(value)
+    return type(value) == "function"
+        or (type(value) == "table"
+            and type(rawget(value, "__cfx_functionReference")) == "string")
+end
+
 local function Failure(context, message, details)
     return WeaponResult.Error(WeaponErrors.INVENTORY_UNAVAILABLE, message, details, context and context.correlationId)
 end
@@ -177,8 +183,27 @@ function FeatherInventoryProvider.GetEquippedSlotsForCharacter(context)
     local configured = Config.Inventory.equipmentSlots or {}
     return WeaponResult.Ok({
         primary = result.value and result.value[configured.primary or Config.Inventory.equipmentSlot] or nil,
-        offhand = result.value and result.value[configured.offhand or "weapon_offhand"] or nil
+        offhand = result.value and result.value[configured.offhand or "weapon_offhand"] or nil,
+        shoulder = result.value and result.value[configured.shoulder or "weapon_shoulder"] or nil,
+        back = result.value and result.value[configured.back or "weapon_back"] or nil
     }, context.correlationId)
+end
+
+function FeatherInventoryProvider.ListWeaponsForCharacter(context)
+    local inventoryResult = Inventory.GetCharacterInventory(context.characterId)
+    if not inventoryResult.ok then return inventoryResult end
+    local itemsResult = Inventory.Inventory.GetInventoryItems(inventoryResult.value.id)
+    if not itemsResult.ok then return itemsResult end
+    local weapons = {}
+    for _, raw in ipairs(itemsResult.value or {}) do
+        local item = NormalizeItem(raw)
+        local definitionId = item and type(item.metadata) == "table"
+            and item.metadata.weaponDefinitionId or nil
+        if definitionId and WeaponDefinitionCatalog.weapons[definitionId] then
+            weapons[#weapons + 1] = item
+        end
+    end
+    return WeaponResult.Ok(weapons, context.correlationId)
 end
 
 function FeatherInventoryProvider.SetEquippedSlotForCharacter(context, slot, itemInstanceId)
@@ -395,12 +420,20 @@ local function RegisterUsableAmmunition()
                 function(_, source, done, useContext)
                     local runtime = WeaponRuntime.Get(source)
                     local result
-                    local weapon = runtime and runtime.equipped
-                        and DefinitionRegistry.Get("weapon", runtime.equipped.definitionId) or nil
-                    if not runtime or not runtime.equipped then
+                    local compatible = false
+                    for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
+                        local equipped = runtime and runtime.slots and runtime.slots[slot] or nil
+                        local weapon = equipped and DefinitionRegistry.Get("weapon", equipped.definitionId) or nil
+                        if weapon and weapon.ok
+                            and WeaponValidation.AcceptsAmmunition(weapon.value, definition.id) then
+                            compatible = true
+                            break
+                        end
+                    end
+                    if not runtime or not runtime.slots or next(runtime.slots) == nil then
                         result = WeaponResult.Error(WeaponErrors.NOT_EQUIPPED,
                             "Equip a compatible weapon before using ammunition")
-                    elseif not weapon or not weapon.ok or not WeaponValidation.AcceptsAmmunition(weapon.value, definition.id) then
+                    elseif not compatible then
                         result = WeaponResult.Error(WeaponErrors.ITEM_INVALID,
                             "This ammunition is not compatible with the equipped weapon")
                     else
@@ -442,7 +475,7 @@ local function RegisterUsableRepairItems()
                 end
                 local runtime = WeaponRuntime.Get(source)
                 local result
-                if not runtime or not runtime.equipped then
+                if not runtime then
                     result = WeaponResult.Error(WeaponErrors.NOT_EQUIPPED, "Equip a weapon before using gun oil")
                 else
                     local rpcContext = {
@@ -451,16 +484,8 @@ local function RegisterUsableRepairItems()
                         correlationId = ("inventory-repair:%s:%s"):format(tostring(source), tostring(GetGameTimer())),
                         activeUseToken = type(useContext) == "table" and useContext.activeUseToken or nil
                     }
-                    if runtime.slots and runtime.slots.offhand then
-                        result = RepairService.BeginSelection(source, rpcContext, done)
-                        if result.ok then return end
-                    else
-                        result = RepairService.Repair(source, rpcContext, {
-                            slot = "primary",
-                            itemInstanceId = runtime.equipped.itemInstanceId,
-                            generation = runtime.equipped.generation
-                        })
-                    end
+                    result = RepairService.BeginSelection(source, rpcContext, done)
+                    if result.ok then return end
                 end
                 TriggerClientEvent("feather-weapons:client:inventoryRepairResult", source, result)
                 if done then done() end
@@ -525,11 +550,16 @@ function InstallFeatherInventoryProvider()
     local required = { "Items", "Instances", "Equipment", "Guards", "Transaction", "MutateItem", "MutateItems", "CreateInstance",
         "PromoteEquippedSlot",
         "GetCapabilities",
-        "GetItemForCharacter", "GetEquippedForCharacter", "SetEquippedForCharacter" }
+        "GetItemForCharacter", "GetEquippedForCharacter", "SetEquippedForCharacter",
+        "GetCharacterInventory" }
     for _, name in ipairs(required) do
         if api[name] == nil then
             return Failure(nil, "feather-inventory is missing a required API", { operation = name })
         end
+    end
+    if type(api.Inventory) ~= "table" or not IsCallable(api.Inventory.GetInventoryItems)
+        or not IsCallable(api.GetCharacterInventory) then
+        return Failure(nil, "feather-inventory is missing weapon listing APIs")
     end
 
     Inventory = api

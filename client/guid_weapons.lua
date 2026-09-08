@@ -162,6 +162,24 @@ function FeatherGuidWeapons.CreateMatchingPair(ped, weaponName)
     return { ok = true, value = pair }
 end
 
+function FeatherGuidWeapons.AwaitInventoryReady(timeoutMs)
+    local deadline = GetGameTimer() + math.max(1000, math.floor(tonumber(timeoutMs) or 5000))
+    local stableFrames = 0
+    local previousGuid = nil
+    while GetGameTimer() < deadline do
+        local guid = CarriedWeaponsGuid()
+        if guid and previousGuid and guid == previousGuid then
+            stableFrames = stableFrames + 1
+        else
+            stableFrames = 0
+        end
+        previousGuid = guid
+        if stableFrames >= 30 then return true end
+        Wait(0)
+    end
+    return false
+end
+
 function FeatherGuidWeapons.ReadClip(ped, record)
     if not record or not record.guid then return false, 0 end
 

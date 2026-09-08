@@ -27,6 +27,9 @@ local offhandUnlock = -200143754
 local dualOverride = nil
 local dualEntitlements = {}
 local dualWeaponCopies = nil
+local holsterProbeWeaponHash = nil
+local holsterProbeWeaponName = nil
+local holsterProbeAttachPoint = nil
 
 local function NativeTrue(value)
     return value == true or value == 1
@@ -288,10 +291,32 @@ local function ClearNativeTestState(ped)
     if offhandWeaponHash ~= weaponHash then
         RemoveWeaponFromPed(ped, offhandWeaponHash, true, nativeRemoveReason)
     end
+    if holsterProbeWeaponHash
+        and holsterProbeWeaponHash ~= weaponHash
+        and holsterProbeWeaponHash ~= offhandWeaponHash then
+        RemoveWeaponFromPed(ped, holsterProbeWeaponHash, true, nativeRemoveReason)
+    end
+
+    holsterProbeWeaponHash = nil
+    holsterProbeWeaponName = nil
+    holsterProbeAttachPoint = nil
 
     local afterWeaponRemoval = math.max(0, math.floor(tonumber(GetPedAmmoByType(ped, ammoHash)) or 0))
     print(('[WeaponNativeProbe] cleanup requested=%d afterType=%d afterWeapon=%d'):format(
         amount, afterTypeRemoval, afterWeaponRemoval))
+end
+
+local function HolsterProbePoints(ped)
+    local points = {}
+    for attachPoint = 0, 15 do
+        local ok, hash = CurrentWeaponAt(ped, true, attachPoint, true)
+        local entity = GetCurrentPedWeaponEntityIndex(ped, attachPoint)
+        if NativeTrue(ok) or (entity and entity ~= 0) then
+            points[#points + 1] = ('%d=%s/%s'):format(
+                attachPoint, tostring(NativeTrue(ok) and hash or 0), tostring(entity or 0))
+        end
+    end
+    return #points > 0 and table.concat(points, ', ') or 'none'
 end
 
 local function GiveProbeWeapon(ped, hash, attachPoint, allowMultipleCopies, forceInHand, forceInHolster)
@@ -407,6 +432,44 @@ RegisterCommand('WeaponNativeProbeDualPrepare', function(_, args)
         tostring(primaryGranted), tostring(offhandGranted), primaryStage, offhandStage,
         tostring(GetDualWieldAllowed(ped))
     ))
+end, false)
+
+RegisterCommand('WeaponNativeProbeHolsterPrepare', function(_, args)
+    if RefuseInventoryWeapon() then return end
+
+    local requestedPoint = math.floor(tonumber(args and args[1]) or offhandAttachPoint)
+    if requestedPoint < 0 or requestedPoint > 15 then
+        print('[WeaponNativeProbe] holster-prepare attach point must be between 0 and 15')
+        return
+    end
+
+    local requestedWeapon = tostring(args and args[2] or 'WEAPON_PISTOL_M1899')
+    local requestedHash = joaat(requestedWeapon)
+    local ped = PlayerPedId()
+
+    ClearNativeTestState(ped)
+    holsterProbeWeaponName = requestedWeapon
+    holsterProbeWeaponHash = requestedHash
+    holsterProbeAttachPoint = requestedPoint
+
+    GiveProbeWeapon(ped, weaponHash, primaryAttachPoint, false, false, true)
+    GiveProbeWeapon(ped, requestedHash, requestedPoint, false, false, true)
+    SetDualWieldAllowed(ped, true)
+    SetCurrentPedWeapon(ped, joaat('WEAPON_UNARMED'), true, 0, false, false)
+    Citizen.InvokeNative(0x94A3C1B804D291EC, ped, true, true, true, true) -- HolsterPedWeapons
+    Wait(250)
+
+    active = true
+    print(('[WeaponNativeProbe] holster-prepare primary=%s attach%d test=%s attach%d selected=%s points=[%s]'):format(
+        weaponName, primaryAttachPoint, requestedWeapon, requestedPoint,
+        tostring(CurrentWeapon(ped)), HolsterProbePoints(ped)))
+end, false)
+
+RegisterCommand('WeaponNativeProbeHolsterStatus', function()
+    local ped = PlayerPedId()
+    print(('[WeaponNativeProbe] holster-status test=%s requestedAttach=%s selected=%s points=[%s]'):format(
+        tostring(holsterProbeWeaponName), tostring(holsterProbeAttachPoint),
+        tostring(CurrentWeapon(ped)), HolsterProbePoints(ped)))
 end, false)
 
 RegisterCommand('WeaponNativeProbeDualAllow', function(_, args)

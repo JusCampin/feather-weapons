@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Infos>
+    <CWeaponInfo>
+        <Name>WEAPON_PISTOL_M1899</Name>
+        <ShortArmHolsterDOF value="3" />
+    </CWeaponInfo>
+</Infos>

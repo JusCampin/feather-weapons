@@ -3,7 +3,7 @@
 ## Ownership model
 
 Inventory is authoritative for weapon ownership, unique item identity, serials,
-condition, attachments, and accepted ammunition. RedM owns the live weapon,
+native maintenance state, attachments, and accepted ammunition. RedM owns the live weapon,
 draw/fire/reload behavior, animation, and contextual controls. Feather creates a
 native weapon only for the currently equipped Inventory instance.
 
@@ -12,9 +12,14 @@ loaded/reserve split. They cannot increase persisted ammunition, create an item,
 change the item instance, or reuse a stale lease generation. Inventory
 transactions and metadata revisions remain authoritative.
 
-Shot consumption is observed on the client because RedM does not provide a
-trusted server-side shot ledger. A modified client can waste its own ammunition
-or condition by reporting decreases, but cannot use this contract to gain
+RedM's ammo-type value is the combined total after clip initialization. Restore
+must clear the type, set the clip, and then set the approved total exactly once;
+setting the total before the clip duplicates the loaded rounds.
+
+Shot consumption and native maintenance are observed on the client because RedM
+does not provide a trusted server-side ledger. A modified client can waste its
+own ammunition or worsen its own weapon status by reporting increases in wear,
+but cannot use this contract to gain
 persistent ammunition or Inventory items. Treat anomaly logs as diagnostics,
 not automatic proof of cheating.
 
@@ -62,8 +67,11 @@ Use the named export at call time instead of retaining functions returned by
 re-resolves the catalog API whenever it is used.
 
 Character logout uses an owner-scoped named checkpoint export. Character waits
-for the final accepted weapon snapshot before beginning Core session teardown;
-the later logout event performs native cleanup only.
+for final maintenance and ammunition checkpoints before beginning Core session
+teardown; the later logout event performs native cleanup only. Abrupt disconnects
+and F8 quits cannot complete a final client request, so maintenance is committed
+periodically while connected and `playerDropped` retains the latest accepted
+server snapshot.
 
 ## Expected boundaries
 

@@ -29,6 +29,7 @@ function InventoryAdapter.InstallProvider(candidate)
         or not IsCallable(candidate.GetEquippedForCharacter)
         or not IsCallable(candidate.SetEquippedForCharacter)
         or not IsCallable(candidate.GetEquippedSlotsForCharacter)
+        or not IsCallable(candidate.ListWeaponsForCharacter)
         or not IsCallable(candidate.SetEquippedSlotForCharacter)
         or not IsCallable(candidate.MutateWeaponMetadataBatch)
         or not IsCallable(candidate.PromoteOffhandToPrimary)
@@ -70,6 +71,11 @@ end
 function InventoryAdapter.GetEquippedSlotsForCharacter(context)
     if not provider then return Unavailable(context, "GetEquippedSlotsForCharacter") end
     return provider.GetEquippedSlotsForCharacter(context)
+end
+
+function InventoryAdapter.ListWeaponsForCharacter(context)
+    if not provider then return Unavailable(context, "ListWeaponsForCharacter") end
+    return provider.ListWeaponsForCharacter(context)
 end
 
 function InventoryAdapter.SetEquippedSlotForCharacter(context, slot, itemInstanceId)

@@ -1,7 +1,22 @@
 WeaponRuntime = {}
 local sessions = {}
+
+local function MaintenanceSnapshot(metadata)
+    local value = type(metadata.maintenance) == "table" and metadata.maintenance or {}
+    return {
+        degradation = tonumber(value.degradation) or 0.0,
+        permanentDegradation = tonumber(value.permanentDegradation) or 0.0,
+        damage = tonumber(value.damage) or 0.0,
+        dirt = tonumber(value.dirt) or 0.0,
+        soot = tonumber(value.soot) or 0.0
+    }
+end
 local tokenCounter = 0
-local validSlots = { primary = true, offhand = true }
+local validSlots = { primary = true, offhand = true, shoulder = true, back = true }
+
+local function EmptySlots()
+    return { primary = nil, offhand = nil, shoulder = nil, back = nil }
+end
 
 function WeaponRuntime.NormalizeSlot(slot)
     slot = slot or "primary"
@@ -11,7 +26,8 @@ end
 local function RefreshCompatibility(runtime)
     runtime.equipped = runtime.slots and runtime.slots.primary or nil
     local occupied = runtime.slots
-        and (runtime.slots.primary ~= nil or runtime.slots.offhand ~= nil)
+        and (runtime.slots.primary ~= nil or runtime.slots.offhand ~= nil
+            or runtime.slots.shoulder ~= nil or runtime.slots.back ~= nil)
     runtime.state = runtime.pending and "equipping" or (occupied and "equipped" or "idle")
 end
 
@@ -80,7 +96,7 @@ function WeaponRuntime.Begin(session)
         characterId = session.characterId,
         sessionId = session.sessionId,
         equipped = nil,
-        slots = { primary = nil, offhand = nil },
+        slots = EmptySlots(),
         pending = nil,
         generation = 0,
         state = "idle"
@@ -105,7 +121,7 @@ function WeaponRuntime.RestoreEquipped(source, sessionId, item, definition, corr
         return WeaponResult.Error(WeaponErrors.ITEM_INVALID, "Weapon equipment slot is invalid", nil, correlationId)
     end
     runtime.pending = nil
-    runtime.slots = runtime.slots or { primary = runtime.equipped, offhand = nil }
+    runtime.slots = runtime.slots or EmptySlots()
     local generation = NextGeneration(runtime)
     local loaded, reserve, total = AmmoSnapshot(item.metadata, definition)
     runtime.slots[slot] = {
@@ -118,7 +134,9 @@ function WeaponRuntime.RestoreEquipped(source, sessionId, item, definition, corr
         ammo = total,
         loaded = loaded,
         reserve = reserve,
+        capacity = definition.capacity,
         condition = tonumber(item.metadata.condition) or definition.condition.maximum,
+        maintenance = MaintenanceSnapshot(item.metadata),
         attachments = InstalledAttachments(item.metadata),
         generation = generation,
         sessionId = runtime.sessionId,
@@ -138,7 +156,7 @@ function WeaponRuntime.BeginEquip(source, sessionId, item, definition, correlati
     if not slot then
         return WeaponResult.Error(WeaponErrors.ITEM_INVALID, "Weapon equipment slot is invalid", nil, correlationId)
     end
-    runtime.slots = runtime.slots or { primary = runtime.equipped, offhand = nil }
+    runtime.slots = runtime.slots or EmptySlots()
     if runtime.pending then
         return WeaponResult.Error(WeaponErrors.OPERATION_CONFLICT, "Another weapon operation is pending", nil,
             correlationId)
@@ -165,7 +183,9 @@ function WeaponRuntime.BeginEquip(source, sessionId, item, definition, correlati
         ammo = total,
         loaded = loaded,
         reserve = reserve,
+        capacity = definition.capacity,
         condition = tonumber(item.metadata.condition) or definition.condition.maximum,
+        maintenance = MaintenanceSnapshot(item.metadata),
         attachments = InstalledAttachments(item.metadata),
         expiresAt = GetGameTimer() + Config.Runtime.authorizationTtlMs,
         correlationId = correlationId
@@ -191,7 +211,9 @@ function WeaponRuntime.BeginEquip(source, sessionId, item, definition, correlati
         ammo = total,
         loaded = loaded,
         reserve = reserve,
+        capacity = definition.capacity,
         condition = tonumber(item.metadata.condition) or definition.condition.maximum,
+        maintenance = MaintenanceSnapshot(item.metadata),
         attachments = InstalledAttachments(item.metadata),
         expiresInMs = Config.Runtime.authorizationTtlMs
     }, correlationId)
@@ -211,7 +233,7 @@ function WeaponRuntime.CompleteEquip(source, sessionId, token, correlationId)
     end
 
     local slot = WeaponRuntime.NormalizeSlot(pending.slot)
-    runtime.slots = runtime.slots or { primary = runtime.equipped, offhand = nil }
+    runtime.slots = runtime.slots or EmptySlots()
     runtime.slots[slot] = {
         slot = slot,
         itemInstanceId = pending.itemInstanceId,
@@ -222,7 +244,9 @@ function WeaponRuntime.CompleteEquip(source, sessionId, token, correlationId)
         ammo = pending.ammo,
         loaded = pending.loaded,
         reserve = pending.reserve,
+        capacity = pending.capacity,
         condition = pending.condition,
+        maintenance = pending.maintenance,
         attachments = pending.attachments,
         generation = NextGeneration(runtime),
         sessionId = runtime.sessionId,
@@ -261,9 +285,8 @@ function WeaponRuntime.SetSlotAmmo(source, sessionId, slot, total, loaded, corre
     if not definitionResult.ok then return definitionResult end
     total = math.floor(tonumber(total) or -1)
     loaded = math.floor(tonumber(loaded) or -1)
-    local maxTotal = math.max(definitionResult.value.capacity,
-        math.floor(tonumber(Config.Escrow and Config.Escrow.maxTotal)
-            or definitionResult.value.capacity))
+    local maxTotal = WeaponValidation.EscrowMaximum(
+        definitionResult.value, equipped.ammunitionType)
     if total < 0 or total > maxTotal or loaded < 0
         or loaded > definitionResult.value.capacity or loaded > total then
         return WeaponResult.Error(WeaponErrors.ITEM_INVALID,
@@ -291,6 +314,21 @@ function WeaponRuntime.SetSlotCondition(source, sessionId, slot, condition, corr
     return WeaponResult.Ok({ slot = slot, condition = equipped.condition }, correlationId)
 end
 
+function WeaponRuntime.SetSlotMaintenance(source, sessionId, slot, maintenance, condition, correlationId)
+    local runtime = sessions[source]
+    slot = WeaponRuntime.NormalizeSlot(slot)
+    local equipped = runtime and runtime.sessionId == sessionId and slot
+        and runtime.slots and runtime.slots[slot] or nil
+    if not equipped then
+        return WeaponResult.Error(WeaponErrors.NOT_EQUIPPED,
+            "No weapon is equipped in that slot", nil, correlationId)
+    end
+    equipped.maintenance = maintenance
+    equipped.condition = tonumber(condition) or equipped.condition
+    return WeaponResult.Ok({ slot = slot, maintenance = maintenance,
+        condition = equipped.condition }, correlationId)
+end
+
 function WeaponRuntime.SetSlotAttachments(source, sessionId, slot, attachments, correlationId)
     local equipped = WeaponRuntime.GetSlot(source, slot)
     local runtime = sessions[source]
@@ -314,7 +352,7 @@ function WeaponRuntime.ResetForReconcile(source, sessionId, correlationId)
     end
     runtime.pending = nil
     runtime.equipped = nil
-    runtime.slots = { primary = nil, offhand = nil }
+    runtime.slots = EmptySlots()
     RefreshCompatibility(runtime)
     return WeaponResult.Ok({ generation = runtime.generation }, correlationId)
 end
@@ -329,7 +367,7 @@ function WeaponRuntime.Unequip(source, sessionId, correlationId, slot)
     if not slot then
         return WeaponResult.Error(WeaponErrors.ITEM_INVALID, "Weapon equipment slot is invalid", nil, correlationId)
     end
-    runtime.slots = runtime.slots or { primary = runtime.equipped, offhand = nil }
+    runtime.slots = runtime.slots or EmptySlots()
     local pendingForSlot = runtime.pending and runtime.pending.slot == slot
     if not runtime.slots[slot] and not pendingForSlot then
         return WeaponResult.Error(WeaponErrors.NOT_EQUIPPED, "No weapon is equipped", nil, correlationId)
@@ -348,7 +386,7 @@ function WeaponRuntime.PromoteOffhand(source, sessionId, correlationId)
         return WeaponResult.Error(WeaponErrors.SESSION_EXPIRED,
             "Character session is no longer active", nil, correlationId)
     end
-    runtime.slots = runtime.slots or { primary = runtime.equipped, offhand = nil }
+    runtime.slots = runtime.slots or EmptySlots()
     local promoted = runtime.slots.offhand
     if not promoted then
         return WeaponResult.Error(WeaponErrors.NOT_EQUIPPED,
@@ -379,7 +417,7 @@ AddEventHandler("core.session.leaving.v1", function(session)
         runtime.state = "leaving"
         runtime.pending = nil
         runtime.equipped = nil
-        runtime.slots = { primary = nil, offhand = nil }
+        runtime.slots = EmptySlots()
         TriggerClientEvent("feather-weapons:client:clear", session.source)
     end
 end)

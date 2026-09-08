@@ -5,13 +5,13 @@ Feather Weapons is the database-backed weapon system for the Feather Framework. 
 Server operation, recovery, integration, and trust boundaries are documented in
 [`docs/operations.md`](docs/operations.md).
 
-> [!WARNING]
-> This alpha release supports primary and native dual-wield loadouts with
-> distinct or matching weapon hashes. The current catalog contains the
-> Cattleman and Schofield revolvers. The wider catalog, shops,
-> transfers, evidence flows, and licenses are not included yet.
+> **[ WARNING ]**
+> This alpha release supports four persistent weapon positions: primary and
+> offhand sidearms plus shoulder and back long guns. Sidearms may dual-wield
+> with distinct ammunition families; compatible native ammo pools are tracked
+> without requiring every equipped weapon to use the same ammunition.
 
-> [!IMPORTANT]
+> **[ IMPORTANT ]**
 > This is a native-first implementation. RedM owns live draw, fire, reload, and
 > contextual controls. Feather owns authorization, Inventory-backed ammunition
 > budgets, condition, persistence, and reconciliation.
@@ -20,7 +20,10 @@ Server operation, recovery, integration, and trust boundaries are documented in
 
 - Equip a weapon by using its item in Feather Inventory.
 - Equip a second supported sidearm and use RedM's native dual-wield controls.
-- Keep matching-hash weapons distinct through native inventory GUIDs.
+- Reject matching-hash equipped pairs; RedM cannot reliably preserve two copies
+  through wheel, holster, and character-restoration transitions.
+- Require shoulder and back weapons to use different native ammunition types;
+  unsafe shared-ammo long-gun combinations fail closed.
 - Unequip it by using the same item again.
 - Restore the equipped weapon after reconnects and resource or server restarts.
 - Finish reconnect and resource-start restoration with equipped guns holstered.
@@ -28,7 +31,7 @@ Server operation, recovery, integration, and trust boundaries are documented in
 - Atomically escrow compatible ammunition into single or dual weapon loadouts.
 - Return ammunition from either equipped slot without unequipping the pair.
 - Persist loaded ammunition after firing.
-- Apply and persist condition loss per shot.
+- Persist RedM native degradation, permanent degradation, damage, dirt, and soot per weapon instance.
 - Select and repair either equipped weapon by using gun oil in Inventory.
 - Atomically consume the gun oil and update weapon condition.
 - Prevent equipped weapon instances from being moved or destroyed.
@@ -81,9 +84,15 @@ character IDs are rejected and are not part of the release contract.
 Weapon catalog IDs remain `revolver_cattleman` and `revolver_schofield` for
 metadata and grant commands. Their Inventory item names are
 `weapon_revolver_cattleman` and `weapon_revolver_schofield`.
+
 For existing installations, stop Inventory and Weapons and run
 `sql/rename_weapon_item_names.sql` before `sql/install_items.sql`.
 The rename preserves numeric item IDs and owned instances; it rejects conflicting rows.
+
+Identical-hash dual wield is intentionally unsupported. A second weapon with
+the same native model remains in Inventory but cannot occupy the offhand slot.
+Different native models remain fully supported as a dual-wield pair.
+
 5. Ensure the resources in the order shown above.
 6. Restart the server; do not use a resource refresh for database migrations.
 
@@ -113,7 +122,7 @@ Config = {
         checkpointDebounceMs = 250
     },
     Escrow = {
-        maxTotal = 30,
+        maxTotal = 200,
         refillAmount = 30
     },
     Offhand = {
@@ -154,7 +163,7 @@ Config = {
 }
 ```
 
-`Offhand.enabled` controls dual-slot equipment. The two allowlists use weapon
+`Offhand.enabled` controls native sidearm dual wield. The two allowlists use weapon
 definition `family` and `slot` values; only entries set to `true` are accepted.
 Keep automatic entitlement provisioning enabled unless another resource owns
 RedM's offhand holster unlock. Testing confirmed that the upgrade entitlement
@@ -164,6 +173,12 @@ so Feather treats this item as a native inventory marker rather than character
 styling. `nativeEntitlements` remains server-owned. Replace its clothing item
 only after testing the alternative in game. Attach-point values should only be
 changed for a tested setup.
+
+`data/weapon_holsters.meta` applies RedM's required short-arm holster-depth
+override for the M1899 pistol. This native metadata correction controls how that
+model sits in equipped holsters; it does not change Feather's logical loadout
+slots. Other pistols remain on their native defaults unless live testing proves
+that a model-specific correction is required.
 
 Startup always fails closed when required dependencies, definitions, or contracts are unavailable. `Inventory.requiredContract` must match the contract feather-inventory reports from `GetCapabilities().value.contractVersion` -- it is checked before any definition, usable callback or guard is registered, and a version below it aborts installation rather than degrading to an empty index. `DevMode` enables diagnostic output and development-only weapon grants; disable it on production servers. Keep `authoritativeNativeAmmo = true` when Feather Weapons owns all weapons and ammunition. At weapon boundaries, this clears the player's native ammo—including ammo granted by other resources—before restoring the equipped inventory item's saved rounds.
 
@@ -181,7 +196,7 @@ The following commands are server-console only:
   and reports each serial, ammunition state, condition, attachments, generation,
   and runtime match.
 - `WeaponReconcile [serverId]` discards unaccepted native state and restores the
-  character's accepted primary/offhand Inventory snapshots with new lease
+  character's accepted primary/offhand/shoulder/back Inventory snapshots with new lease
   generations.
 
 Run the inspection command first. Reconciliation is an explicit recovery action,
@@ -195,7 +210,7 @@ Players can change Feather's registered bindings in their Cfx key-binding settin
 
 Use a weapon item to equip it. Use that same item again to unequip it. When the
 configured offhand policy permits the weapon, using a second sidearm equips it
-in the offhand slot. Using the primary item promotes the offhand weapon; using
+in the offhand slot. Long guns fill shoulder and back. Using the primary item promotes the offhand weapon; using
 the offhand item removes only that slot.
 
 ### Reload
@@ -216,9 +231,10 @@ other slot as well.
 
 ### Condition and repair
 
-Accepted shots lower condition according to the weapon definition. Use a
-`gun_oil` from Inventory to restore up to 25 condition. When two
-weapons are equipped, choose the primary or offhand weapon from the repair
+Weapon condition is derived from RedM's native maintenance state; ammunition
+checkpoints never apply condition wear. Use `gun_oil` from Inventory to clean
+soot and dirt and restore degradation up to the weapon's permanent wear floor. When two
+weapons are equipped, choose the primary, offhand, shoulder, or back weapon from the repair
 menu. Full-condition, stale-slot, and invalid repairs do not consume a kit.
 
 ### Weapon modifications
@@ -233,10 +249,10 @@ Attachment installation and removal require proximity to a configured gunsmith b
 | Escrow ceiling | 30 rounds total |
 | Ammunition | Standard revolver cartridges |
 | Maximum condition | 100 |
-| Wear | 1 condition per shot |
+| Wear | RedM native degradation (usage and environment) |
 | Equip minimum | 1 condition |
 | Repair cost | 1 gun oil |
-| Repair amount | Up to 25 condition |
+| Repair result | Clean to the native permanent-degradation floor |
 
 ## Persistence
 
@@ -268,15 +284,14 @@ The current release has passed Inventory Contract 4 startup gates, unique
 issuance, both equip orders, alternating fire/reload, per-item condition,
 slot-aware repair and attachments, movement guards, reconciliation, entitlement
 recovery, reconnect/resource/server restart, Admin operations, and two-player
-isolation. Matching-hash pair refill/unload and holstered restoration passed
-manual checks. The final runtime, dual-slot, and release gates passed `5/5`,
-`14/14`, and `8/8`; primary-only behavior also remains regression tested.
+isolation. Matching-hash pairs are rejected by policy. Different-hash sidearm
+pairs, all four logical slots, and primary-only behavior remain regression tested.
 
 ## Attachment phase
 
 The first attachment vertical slice uses a Cattleman Long Barrel inventory item
 mapped to `COMPONENT_REVOLVER_CATTLEMAN_BARREL_LONG`. Open `/weaponmods` or press
-`F6`, choose the primary or offhand weapon when a pair is equipped, then install
+`F6`, choose an equipped weapon slot, then install
 or remove the component. Both operations validate the selected slot lease,
 commit atomically, and rebuild the approved native pair without changing saved
 ammunition or condition.

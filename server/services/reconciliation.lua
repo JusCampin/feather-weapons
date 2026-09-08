@@ -19,19 +19,31 @@ function ReconciliationService.RehydrateSession(session)
     if not equippedResult.ok then return equippedResult end
 
     local restored = {}
-    for _, slot in ipairs({ "primary", "offhand" }) do
+    for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
         local itemInstanceId = equippedResult.value and equippedResult.value[slot] or nil
         if itemInstanceId then
             local restoreResult = EquipService.Restore(
                 session.source, session, itemInstanceId, context.correlationId, slot)
             if not restoreResult.ok then
-                InventoryAdapter.SetEquippedSlotForCharacter(context, slot, nil)
+                if restoreResult.error.code ~= WeaponErrors.CONDITION_BROKEN then
+                    InventoryAdapter.SetEquippedSlotForCharacter(context, slot, nil)
+                end
                 print(("[feather-weapons] rejected saved equipped item character=%s slot=%s code=%s")
                     :format(tostring(session.characterId), slot, restoreResult.error.code))
             else
                 restored[slot] = restoreResult.value
             end
         end
+    end
+    local normalized = AmmoService.NormalizeSharedPools(session.source, {
+        characterId = session.characterId,
+        sessionId = session.sessionId,
+        correlationId = context.correlationId
+    })
+    if not normalized.ok then
+        local failure = normalized.error or {}
+        print(("[feather-weapons] shared ammunition recovery deferred character=%s code=%s message=%s")
+            :format(tostring(session.characterId), tostring(failure.code), tostring(failure.message)))
     end
     return WeaponResult.Ok({ slots = restored, equipped = restored.primary }, context.correlationId)
 end
@@ -42,7 +54,6 @@ function ReconciliationService.Snapshot(source, sessionId, correlationId)
         return WeaponResult.Error(WeaponErrors.SESSION_EXPIRED, "Character session is no longer active", nil,
             correlationId)
     end
-
     local equipped = nil
     if runtime.equipped then
         equipped = {
@@ -54,14 +65,16 @@ function ReconciliationService.Snapshot(source, sessionId, correlationId)
             ammo = runtime.equipped.ammo,
             loaded = runtime.equipped.loaded,
             reserve = runtime.equipped.reserve,
+            capacity = runtime.equipped.capacity,
             condition = runtime.equipped.condition,
+            maintenance = runtime.equipped.maintenance,
             generation = runtime.equipped.generation,
             sessionId = runtime.equipped.sessionId,
             attachments = runtime.equipped.attachments or {}
         }
     end
     local slots = {}
-    for _, slot in ipairs({ "primary", "offhand" }) do
+    for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
         local value = runtime.slots and runtime.slots[slot] or nil
         if value then
             slots[slot] = {
@@ -74,7 +87,9 @@ function ReconciliationService.Snapshot(source, sessionId, correlationId)
                 ammo = value.ammo,
                 loaded = value.loaded,
                 reserve = value.reserve,
+                capacity = value.capacity,
                 condition = value.condition,
+                maintenance = value.maintenance,
                 generation = value.generation,
                 sessionId = value.sessionId,
                 attachments = value.attachments or {}
@@ -94,7 +109,7 @@ function ReconciliationService.InspectMetadata(source)
     if not equippedResult.ok then return equippedResult end
     local runtime = WeaponRuntime.Get(source)
     local slots = {}
-    for _, slot in ipairs({ "primary", "offhand" }) do
+    for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
         local itemInstanceId = equippedResult.value and equippedResult.value[slot] or nil
         if itemInstanceId then
             local itemResult = InventoryAdapter.GetItemForCharacter(context, itemInstanceId)
@@ -113,6 +128,7 @@ function ReconciliationService.InspectMetadata(source)
                 definitionId = definitionId,
                 serialNumber = item.metadata.serialNumber,
                 condition = item.metadata.condition,
+                maintenance = item.metadata.maintenance,
                 ammunitionType = item.metadata.ammo.type or definitionResult.value.ammunitionType,
                 loaded = item.metadata.ammo.loaded,
                 reserve = item.metadata.ammo.reserve,
@@ -125,7 +141,7 @@ function ReconciliationService.InspectMetadata(source)
         end
     end
     return WeaponResult.Ok({
-        equipped = slots.primary ~= nil or slots.offhand ~= nil,
+        equipped = next(slots) ~= nil,
         characterId = session.characterId,
         slots = slots
     }, context.correlationId)
@@ -156,11 +172,32 @@ function ReconciliationService.BootstrapActiveSessions()
             if sessionResult.ok then
                 WeaponRuntime.Begin(sessionResult.value)
                 ReconciliationService.RehydrateSession(sessionResult.value)
-                TriggerClientEvent("feather-weapons:client:reconcile", source)
             end
         end
     end
 end
+
+RegisterNetEvent("feather-weapons:server:client-ready", function()
+    local playerSource = source
+    local sessionResult = CoreAdapter.ResolveSession(playerSource)
+    -- Full joins are restored by feather-character's runtime-ready signal.
+    -- During a weapons-resource restart the character is already active, so
+    -- this handshake closes the server/client listener registration race.
+    if not sessionResult.ok then return end
+
+    local session = sessionResult.value
+    local runtime = WeaponRuntime.Get(playerSource)
+    if not runtime or runtime.sessionId ~= session.sessionId then
+        WeaponRuntime.Begin(session)
+        local restored = ReconciliationService.RehydrateSession(session)
+        if not restored.ok then return end
+    end
+    if Config.DevMode then
+        print(("[feather-weapons] client-ready restore source=%s session=%s")
+            :format(tostring(playerSource), tostring(session.sessionId)))
+    end
+    TriggerClientEvent("feather-weapons:client:runtime-ready", playerSource)
+end)
 
 FeatherCore.RPC.Register("feather-weapons:state:get", function(_, respond, source, context)
     respond(ReconciliationService.Snapshot(source, context.sessionId, context.correlationId))

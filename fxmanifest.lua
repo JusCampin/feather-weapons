@@ -6,7 +6,7 @@ lua54 'yes'
 description 'The official weapon system for Feather framework.'
 author 'Feather Framework'
 name 'feather-weapons'
-version '0.8.0'
+version '0.9.0'
 
 shared_scripts {
     'config.lua',
@@ -28,6 +28,7 @@ server_scripts {
     '/server/services/runtime.lua',
     '/server/services/equip.lua',
     '/server/services/ammo.lua',
+    '/server/services/maintenance.lua',
     '/server/services/repair.lua',
     '/server/services/attachments.lua',
     '/server/services/issuance.lua',
@@ -40,9 +41,17 @@ server_scripts {
 client_scripts {
     '/client/imports.lua',
     '/client/guid_weapons.lua',
+    '/client/native_maintenance.lua',
+    '/client/native_weapon_coordinator.lua',
     '/client/main.lua',
     '/client/native_probe.lua'
 }
+
+files {
+    '/data/weapon_holsters.meta'
+}
+
+data_file 'WEAPONINFO_FILE_PATCH' '/data/weapon_holsters.meta'
 
 dependencies {
     'feather-core',

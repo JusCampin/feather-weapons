@@ -44,6 +44,16 @@ function WeaponValidation.AcceptsAmmunition(definition, ammunitionType)
     return false
 end
 
+function WeaponValidation.EscrowMaximum(definition, ammunitionType)
+    local capacity = math.max(1, math.floor(tonumber(definition and definition.capacity) or 1))
+    local configured = math.max(capacity,
+        math.floor(tonumber(Config and Config.Escrow and Config.Escrow.maxTotal) or capacity))
+    local ammunition = WeaponDefinitionCatalog.ammunition[ammunitionType]
+    local nativeMaximum = ammunition and tonumber(ammunition.maxTotal) or nil
+    if nativeMaximum then configured = math.min(configured, math.floor(nativeMaximum)) end
+    return math.max(capacity, configured)
+end
+
 function WeaponValidation.Definition(definition, expectedKind)
     local errors = {}
     if type(definition) ~= "table" then
@@ -59,6 +69,9 @@ function WeaponValidation.Definition(definition, expectedKind)
         if not IsNonEmptyString(definition.nativeWeaponName) then AddError(errors, "nativeWeaponName",
                 "must be a non-empty string") end
         if not WeaponConstants.WeaponSlots[definition.slot] then AddError(errors, "slot", "is not supported") end
+        if definition.matchingPairSupported ~= nil then
+            AddError(errors, "matchingPairSupported", "is no longer supported")
+        end
         if not IsNonEmptyString(definition.ammunitionType) then AddError(errors, "ammunitionType",
                 "must reference ammunition") end
         ValidateStringArray(errors, "ammunitionTypes", definition.ammunitionTypes)
@@ -100,6 +113,10 @@ function WeaponValidation.Definition(definition, expectedKind)
     elseif expectedKind == "ammunition" then
         if not IsNonEmptyString(definition.nativeAmmoName) then AddError(errors, "nativeAmmoName",
         "must be a non-empty string") end
+        if definition.maxTotal ~= nil and (type(definition.maxTotal) ~= "number"
+            or definition.maxTotal < 1 or definition.maxTotal % 1 ~= 0) then
+            AddError(errors, "maxTotal", "must be a positive integer when provided")
+        end
     elseif expectedKind == "attachment" then
         if not WeaponConstants.AttachmentSlots[definition.slot] then AddError(errors, "slot", "is not supported") end
         if not IsNonEmptyString(definition.nativeComponentName) then AddError(errors, "nativeComponentName",
@@ -131,6 +148,22 @@ function WeaponValidation.Metadata(metadata, definition)
         AddError(errors, "condition", "is outside the definition bounds")
     end
 
+    if type(metadata.maintenance) ~= "table" then
+        AddError(errors, "maintenance", "must be a native weapon maintenance record")
+    else
+        for _, field in ipairs({ "degradation", "permanentDegradation", "damage", "dirt", "soot" }) do
+            local value = tonumber(metadata.maintenance[field])
+            if not value or value < 0.0 or value > 1.0 then
+                AddError(errors, "maintenance." .. field, "must be between 0 and 1")
+            end
+        end
+        if tonumber(metadata.maintenance.permanentDegradation)
+            and tonumber(metadata.maintenance.degradation)
+            and metadata.maintenance.degradation < metadata.maintenance.permanentDegradation then
+            AddError(errors, "maintenance.degradation", "cannot be below permanent degradation")
+        end
+    end
+
     if type(metadata.ammo) ~= "table" then
         AddError(errors, "ammo", "must be a table")
     else
@@ -142,8 +175,8 @@ function WeaponValidation.Metadata(metadata, definition)
             AddError(errors, "ammo.loaded", "must be an integer within weapon capacity")
         end
         local reserve = tonumber(metadata.ammo.reserve or 0)
-        local maxTotal = math.max(definition.capacity,
-            math.floor(tonumber(Config and Config.Escrow and Config.Escrow.maxTotal) or definition.capacity))
+        local maxTotal = WeaponValidation.EscrowMaximum(
+            definition, metadata.ammo.type or definition.ammunitionType)
         if not reserve or reserve < 0 or reserve % 1 ~= 0 or (loaded or 0) + reserve > maxTotal then
             AddError(errors, "ammo.reserve", "must be a non-negative integer within the escrow limit")
         end

@@ -1,5 +1,19 @@
 WeaponMetadata = {}
 
+local function NormalizeMaintenance(value)
+    value = type(value) == "table" and value or {}
+    local function Unit(number)
+        return math.max(0.0, math.min(1.0, tonumber(number) or 0.0))
+    end
+    return {
+        degradation = Unit(value.degradation),
+        permanentDegradation = Unit(value.permanentDegradation),
+        damage = Unit(value.damage),
+        dirt = Unit(value.dirt),
+        soot = Unit(value.soot)
+    }
+end
+
 function WeaponMetadata.Build(definition, options)
     options = type(options) == "table" and options or {}
     local metadata = {
@@ -7,6 +21,7 @@ function WeaponMetadata.Build(definition, options)
         weaponDefinitionId = definition.id,
         serialNumber = options.serialNumber,
         condition = tonumber(options.condition) or definition.condition.maximum,
+        maintenance = NormalizeMaintenance(options.maintenance),
         quality = tonumber(options.quality) or 100,
         ammo = {
             type = options.ammunitionType or definition.ammunitionType,
@@ -37,6 +52,9 @@ function WeaponMetadata.Validate(metadata, definition, correlationId)
     if type(metadata) == "table" and type(metadata.ammo) == "table"
         and metadata.ammo.reserve == nil then
         metadata.ammo.reserve = 0
+    end
+    if type(metadata) == "table" and metadata.maintenance ~= nil then
+        metadata.maintenance = NormalizeMaintenance(metadata.maintenance)
     end
     local valid, errors = WeaponValidation.Metadata(metadata, definition)
     if not valid then

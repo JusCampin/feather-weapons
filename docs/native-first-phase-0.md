@@ -60,10 +60,17 @@ Available F8 commands:
 WeaponNativeProbePrepare [loaded] [total] [logicalItem]
 WeaponNativeProbeStatus [label]
 WeaponNativeProbeWatch
+WeaponNativeProbeHolsterPrepare [attachPoint] [weaponName]
+WeaponNativeProbeHolsterStatus
 WeaponNativeProbeMark <name>
 WeaponNativeProbeCompare <first> <second>
 WeaponNativeProbeClear
 ```
+
+The holster probe grants the configured primary test weapon at its normal
+attachment point and grants `WEAPON_PISTOL_M1899` at the requested point
+(default `3`). It then holsters both and reports every occupied native attachment
+point from `0` through `15`. Use `WeaponNativeProbeClear` between candidates.
 
 `loaded` is the requested clip count and `total` is the requested native total.
 Use `logicalItem` (for example, `cattleman-a` and `cattleman-b`) to label repeated
