@@ -468,7 +468,7 @@ local function RegisterUsableRepairItems()
         local itemName = repair and repair.itemDefinitionId
         if itemName and DefinitionIds[itemName] and not registered[itemName] then
             registered[itemName] = true
-            local registered = Inventory.Items.RegisterUsableItem(itemName, function(item, source, done, useContext)
+            local registrationResult = Inventory.Items.RegisterUsableItem(itemName, function(item, source, done, useContext)
                 if Config.DevMode then
                     print(("[feather-weapons] inventory repair use item=%s source=%s")
                         :format(tostring(item.id), tostring(source)))
@@ -490,11 +490,11 @@ local function RegisterUsableRepairItems()
                 TriggerClientEvent("feather-weapons:client:inventoryRepairResult", source, result)
                 if done then done() end
             end, GetCurrentResourceName())
-            if type(registered) == "table" and registered.ok ~= true then
+            if type(registrationResult) == "table" and registrationResult.ok ~= true then
                 return Failure(nil, "Repair usable-item registration failed", {
                     itemName = itemName,
-                    code = registered.error and registered.error.code,
-                    reason = registered.error and registered.error.message
+                    code = registrationResult.error and registrationResult.error.code,
+                    reason = registrationResult.error and registrationResult.error.message
                 })
             end
         end

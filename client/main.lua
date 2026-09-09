@@ -4,6 +4,7 @@ local equipped, offhand, pendingToken, pendingNativeWeaponName = nil, nil, nil, 
 local extraSlots = { shoulder = nil, back = nil }
 local extraObserved = { shoulder = nil, back = nil }
 local extraSyncInFlight = { shoulder = false, back = false }
+local longgunReloadInFlight = false
 local syncInFlight, desiredAmmo, desiredLoaded = false, nil, nil
 local unloadInFlight, unloadQueued = false, false
 local inventoryWeaponInFlight = false
@@ -41,36 +42,59 @@ local function RemoveNativePairCopies()
 end
 
 local function PairNativeClips(primary, secondary)
+    if type(primary) ~= 'table' or type(primary.nativeWeaponName) ~= 'string'
+        or type(secondary) ~= 'table' or type(secondary.nativeWeaponName) ~= 'string' then
+        return false, 0, false, 0
+    end
+
     local ped = PlayerPedId()
     local primaryOk, primaryLoaded = GetAmmoInClip(ped, joaat(primary.nativeWeaponName))
     local offhandOk, offhandLoaded = GetAmmoInClip(ped, joaat(secondary.nativeWeaponName))
+
     return NativeTrue(primaryOk), primaryLoaded, NativeTrue(offhandOk), offhandLoaded
 end
 
 local function ObservablePairClips(primary, secondary)
+    if type(primary) ~= 'table' or type(primary.nativeWeaponName) ~= 'string'
+        or type(secondary) ~= 'table' or type(secondary.nativeWeaponName) ~= 'string' then
+        return false, 0, false, 0
+    end
+
     if pairSingleFallback == 'primary' then
         local ok, loaded = GetAmmoInClip(PlayerPedId(), joaat(primary.nativeWeaponName))
         return NativeTrue(ok), loaded, true, 0
     end
+
     if pairSingleFallback == 'offhand' then
         local ok, loaded = GetAmmoInClip(PlayerPedId(), joaat(secondary.nativeWeaponName))
         return true, 0, NativeTrue(ok), loaded
     end
+
     return PairNativeClips(primary, secondary)
 end
 
 local function PairNativeTotal(primary, secondary)
+    if type(primary) ~= 'table' or type(primary.nativeAmmoName) ~= 'string'
+        or type(secondary) ~= 'table' or type(secondary.nativeAmmoName) ~= 'string' then
+        return 0
+    end
+
     local ped = PlayerPedId()
-    local primaryTotal = math.max(0, math.floor(tonumber(
-        GetPedAmmoByType(ped, joaat(primary.nativeAmmoName))) or 0))
+    local primaryTotal = math.max(0, math.floor(tonumber(GetPedAmmoByType(ped, joaat(primary.nativeAmmoName))) or 0))
     if primary.nativeAmmoName == secondary.nativeAmmoName then return primaryTotal end
-    return primaryTotal + math.max(0, math.floor(tonumber(
-        GetPedAmmoByType(ped, joaat(secondary.nativeAmmoName))) or 0))
+
+    return primaryTotal + math.max(0, math.floor(tonumber(GetPedAmmoByType(ped, joaat(secondary.nativeAmmoName))) or 0))
 end
 
 local function IsDualSidearmPair(primary, secondary)
+    if type(primary) ~= 'table' or type(primary.definitionId) ~= 'string'
+        or type(secondary) ~= 'table' or type(secondary.definitionId) ~= 'string' then
+        return false
+    end
+
     local primaryDefinition = WeaponDefinitionCatalog.weapons[primary.definitionId]
     local secondaryDefinition = WeaponDefinitionCatalog.weapons[secondary.definitionId]
+
     return primaryDefinition and secondaryDefinition
         and primaryDefinition.slot == 'sidearm' and secondaryDefinition.slot == 'sidearm'
 end
@@ -90,8 +114,7 @@ local function ActivateLoadedPairSlot(ped, slot, state)
     if Config.DevMode then
         local selectedOk, selectedHash = GetCurrentPedWeapon(ped, true, 0, false)
         print(('[feather-weapons] pair depleted; single-weapon fallback slot=%s weapon=%s selected=%s/%s')
-            :format(slot, tostring(state.nativeWeaponName),
-                tostring(selectedOk), tostring(selectedHash)))
+            :format(slot, tostring(state.nativeWeaponName), tostring(selectedOk), tostring(selectedHash)))
     end
 end
 
@@ -148,6 +171,7 @@ local function EnsureOffhandEntitlement()
         end
     end
     SetAllowDualWield(PlayerPedId(), true)
+
     return provisioned and NativeTrue(GetAllowDualWield(PlayerPedId()))
 end
 
@@ -308,6 +332,7 @@ local function GiveApprovedNativeWeapon(nativeWeaponName, nativeAmmoName, amount
         SelectNativeAmmoType(ped, nativeWeaponName, nativeAmmoName)
         SetPedAmmoByType(ped, ammoHash, 0)
     end
+
     loaded = math.max(0, math.min(amount, math.floor(tonumber(loaded) or 0)))
     SetAmmoInClip(ped, weaponHash, loaded)
     if ammoHash then
@@ -325,6 +350,19 @@ local function GiveApprovedNativeWeapon(nativeWeaponName, nativeAmmoName, amount
 end
 
 local function RestoreApprovedNativePair(primary, secondary)
+    if type(primary) ~= 'table' or type(primary.nativeWeaponName) ~= 'string'
+        or type(primary.nativeAmmoName) ~= 'string'
+        or type(secondary) ~= 'table' or type(secondary.nativeWeaponName) ~= 'string'
+        or type(secondary.nativeAmmoName) ~= 'string' then
+        return false, 'Approved weapon pair state is incomplete.'
+    end
+
+    local primaryAmmo = math.max(0, math.floor(tonumber(primary.ammo) or 0))
+    local secondaryAmmo = math.max(0, math.floor(tonumber(secondary.ammo) or 0))
+    local primaryLoaded = math.max(0, math.floor(tonumber(primary.loaded) or 0))
+    local secondaryLoaded = math.max(0, math.floor(tonumber(secondary.loaded) or 0))
+    local primaryReserve = math.max(0, math.floor(tonumber(primary.reserve) or (primaryAmmo - primaryLoaded)))
+    local secondaryReserve = math.max(0, math.floor(tonumber(secondary.reserve) or (secondaryAmmo - secondaryLoaded)))
     local dualSidearms = IsDualSidearmPair(primary, secondary)
     if dualSidearms and not EnsureOffhandEntitlement() then
         return false, 'Offhand holster entitlement is unavailable.'
@@ -339,6 +377,7 @@ local function RestoreApprovedNativePair(primary, secondary)
     if identical then
         return false, 'Matching weapon models cannot be equipped together.'
     end
+
     local sharedAmmo = primary.nativeAmmoName == secondary.nativeAmmoName
     if dualSidearms then
         GiveWeaponToPed(ped, primaryHash, 0, true, false,
@@ -350,9 +389,9 @@ local function RestoreApprovedNativePair(primary, secondary)
         -- A mixed sidearm/long-gun loadout is not a dual-wield pair. Let RedM
         -- place both ordinary weapons in their native wheel/holster slots.
         GiveApprovedNativeWeapon(primary.nativeWeaponName, primary.nativeAmmoName,
-            primary.ammo, primary.loaded, primary.attachments)
+            primaryAmmo, primaryLoaded, primary.attachments)
         GiveApprovedNativeWeapon(secondary.nativeWeaponName, secondary.nativeAmmoName,
-            secondary.ammo, secondary.loaded, secondary.attachments)
+            secondaryAmmo, secondaryLoaded, secondary.attachments)
     end
 
     -- Select the approved type before native reload; identical copies require
@@ -363,25 +402,27 @@ local function RestoreApprovedNativePair(primary, secondary)
     -- per-hand conventions documented below.
     if sharedAmmo then
         SetPedAmmoByType(ped, joaat(primary.nativeAmmoName), math.max(0,
-            primary.ammo + secondary.ammo - primary.loaded - secondary.loaded))
+            primaryAmmo + secondaryAmmo - primaryLoaded - secondaryLoaded))
     else
         -- Seed both reserve pools before materializing their clips.
-        SetPedAmmoByType(ped, joaat(primary.nativeAmmoName), primary.reserve)
-        SetPedAmmoByType(ped, joaat(secondary.nativeAmmoName), secondary.reserve)
+        SetPedAmmoByType(ped, joaat(primary.nativeAmmoName), primaryReserve)
+        SetPedAmmoByType(ped, joaat(secondary.nativeAmmoName), secondaryReserve)
     end
+
     local primaryReady, secondaryReady = false, false
     for _ = 1, 40 do
-        SetAmmoInClip(ped, primaryHash, primary.loaded)
-        SetAmmoInClip(ped, secondaryHash, secondary.loaded)
-        local primaryOk, primaryLoaded = GetAmmoInClip(ped, primaryHash)
-        local secondaryOk, secondaryLoaded = GetAmmoInClip(ped, secondaryHash)
+        SetAmmoInClip(ped, primaryHash, primaryLoaded)
+        SetAmmoInClip(ped, secondaryHash, secondaryLoaded)
+        local primaryOk, observedPrimaryLoaded = GetAmmoInClip(ped, primaryHash)
+        local secondaryOk, observedSecondaryLoaded = GetAmmoInClip(ped, secondaryHash)
         primaryReady = NativeTrue(primaryOk)
-            and math.max(0, math.floor(tonumber(primaryLoaded) or 0)) == primary.loaded
+            and math.max(0, math.floor(tonumber(observedPrimaryLoaded) or 0)) == primaryLoaded
         secondaryReady = NativeTrue(secondaryOk)
-            and math.max(0, math.floor(tonumber(secondaryLoaded) or 0)) == secondary.loaded
+            and math.max(0, math.floor(tonumber(observedSecondaryLoaded) or 0)) == secondaryLoaded
         if primaryReady and secondaryReady then break end
         Wait(50)
     end
+
     if not primaryReady or not secondaryReady then
         return false, 'Native weapon pair did not become ready.'
     end
@@ -392,11 +433,11 @@ local function RestoreApprovedNativePair(primary, secondary)
         -- both clips exist, assert the complete authorized aggregate and then
         -- reassert each clip without changing per-item escrow ownership.
         SetPedAmmoByType(ped, joaat(primary.nativeAmmoName),
-            math.max(0, primary.ammo + secondary.ammo))
-        SetAmmoInClip(ped, primaryHash, primary.loaded)
-        SetAmmoInClip(ped, secondaryHash, secondary.loaded)
+            math.max(0, primaryAmmo + secondaryAmmo))
+        SetAmmoInClip(ped, primaryHash, primaryLoaded)
+        SetAmmoInClip(ped, secondaryHash, secondaryLoaded)
         SetPedAmmoByType(ped, joaat(primary.nativeAmmoName),
-            math.max(0, primary.ammo + secondary.ammo))
+            math.max(0, primaryAmmo + secondaryAmmo))
     end
 
     ApplyNativeAttachments(primary.nativeWeaponName, primary.attachments)
@@ -405,20 +446,24 @@ local function RestoreApprovedNativePair(primary, secondary)
     if dualSidearms then
         SetCurrentPedWeapon(ped, primaryHash, true, primaryPoint, false, false)
     end
+
     if not sharedAmmo then
         -- Before the offhand clip exists, RedM may leave that pool at the raw
         -- reserve value. Reapplying reserve after activation makes the native
         -- total include the offhand clip exactly once without mutating the
         -- selected primary weapon.
         Wait(0)
-        SetPedAmmoByType(ped, joaat(secondary.nativeAmmoName), secondary.reserve)
+        SetPedAmmoByType(ped, joaat(secondary.nativeAmmoName), secondaryReserve)
     end
+
     return true
 end
 
 local function NativePairAvailable(primary, secondary)
     if IsDualSidearmPair(primary, secondary)
-        and not NativeTrue(GetAllowDualWield(PlayerPedId())) then return false end
+        and not NativeTrue(GetAllowDualWield(PlayerPedId())) then
+        return false
+    end
 
     local primaryOk, _, secondaryOk = PairNativeClips(primary, secondary)
     return primaryOk and secondaryOk
@@ -459,6 +504,7 @@ local function ClearNativeWeapon()
     if offhand and offhand.nativeWeaponName then
         RemoveNativeWeapon(PlayerPedId(), joaat(offhand.nativeWeaponName))
     end
+
     for _, slot in ipairs({ 'shoulder', 'back' }) do
         local state = extraSlots[slot]
         if state and state.nativeWeaponName then
@@ -469,8 +515,7 @@ local function ClearNativeWeapon()
     ResetNativeAmmo('weapon-cleared', nativeAmmoName)
     RemoveOffhandEntitlements()
 
-    equipped, offhand, pendingToken, pendingNativeWeaponName, desiredAmmo, desiredLoaded, syncInFlight =
-        nil, nil, nil, nil, nil, nil, false
+    equipped, offhand, pendingToken, pendingNativeWeaponName, desiredAmmo, desiredLoaded, syncInFlight = nil, nil, nil, nil, nil, nil, false
     extraSlots = { shoulder = nil, back = nil }
     extraObserved = { shoulder = nil, back = nil }
     extraSyncInFlight = { shoulder = false, back = false }
@@ -486,7 +531,9 @@ end
 
 local function SlotState(slot)
     if slot == 'primary' then return equipped end
+
     if slot == 'offhand' then return offhand end
+
     return extraSlots[slot]
 end
 
@@ -494,14 +541,58 @@ local function SlotLabel(slot)
     return ({ primary = 'Primary', offhand = 'Offhand', shoulder = 'Shoulder', back = 'Back' })[slot] or slot
 end
 
+local function RefreshSharedLonggunPools()
+    local pools = {}
+    for _, slot in ipairs({ 'shoulder', 'back' }) do
+        local state = extraSlots[slot]
+        if state and type(state.nativeAmmoName) == 'string' then
+            local observed = extraObserved[slot]
+            local pool = pools[state.nativeAmmoName] or {
+                count = 0, authorized = 0, loaded = 0, weapons = {}
+            }
+            local consumed = math.max(0, math.floor(tonumber(observed and observed.consumed) or 0))
+            local loaded = math.max(0, math.floor(tonumber(observed and observed.loaded)
+                or tonumber(state.loaded) or 0))
+            pool.count = pool.count + 1
+            pool.authorized = pool.authorized
+                + math.max(0, math.floor(tonumber(state.ammo) or 0) - consumed)
+            pool.loaded = pool.loaded + loaded
+            pool.weapons[#pool.weapons + 1] = {
+                nativeWeaponName = state.nativeWeaponName,
+                loaded = loaded
+            }
+            pools[state.nativeAmmoName] = pool
+        end
+    end
+
+    local ped = PlayerPedId()
+    for nativeAmmoName, pool in pairs(pools) do
+        if pool.count > 1 then
+            SetPedAmmoByType(ped, joaat(nativeAmmoName), pool.loaded)
+            for _, weapon in ipairs(pool.weapons) do
+                if type(weapon.nativeWeaponName) == 'string' then
+                    SetAmmoInClip(ped, joaat(weapon.nativeWeaponName), weapon.loaded)
+                end
+            end
+            SetPedAmmoByType(ped, joaat(nativeAmmoName), pool.loaded)
+            if Config.DevMode then
+                print(('[feather-weapons] shared long-gun pool authorized=%d nativeClips=%d')
+                    :format(pool.authorized, pool.loaded))
+            end
+        end
+    end
+end
+
 local function ClearSidearmsPreservingLongguns()
     RemoveNativePairCopies()
     if equipped and equipped.nativeWeaponName then
         RemoveNativeWeapon(PlayerPedId(), joaat(equipped.nativeWeaponName))
     end
+
     if offhand and offhand.nativeWeaponName then
         RemoveNativeWeapon(PlayerPedId(), joaat(offhand.nativeWeaponName))
     end
+
     RemoveOffhandEntitlements()
     equipped, offhand, desiredAmmo, desiredLoaded, syncInFlight = nil, nil, nil, nil, false
     pairSyncInFlight, pairCheckpointPending, pairObserved = false, false, nil
@@ -547,10 +638,12 @@ local function AwaitSingleNativeRestore(state)
         for _ = 1, 40 do
             if sequence ~= singleRestoreSequence or not equipped
                 or not SameInstance(equipped.itemInstanceId, state.itemInstanceId)
-                or equipped.generation ~= state.generation then return end
+                or equipped.generation ~= state.generation then
+                return
+            end
+
             local clipOk = GetAmmoInClip(ped, weaponHash)
-            local nativeTotal = math.max(0, math.floor(tonumber(
-                GetPedAmmoByType(ped, ammoHash)) or 0))
+            local nativeTotal = math.max(0, math.floor(tonumber(GetPedAmmoByType(ped, ammoHash)) or 0))
             if NativeTrue(clipOk) and nativeTotal == state.ammo then
                 singleNativeReady = true
                 if Config.DevMode then
@@ -561,6 +654,7 @@ local function AwaitSingleNativeRestore(state)
             end
             Wait(50)
         end
+
         if Config.DevMode and sequence == singleRestoreSequence then
             print(('[feather-weapons] native single weapon restore deferred item=%s expectedTotal=%s')
                 :format(tostring(state.itemInstanceId), tostring(state.ammo)))
@@ -570,6 +664,7 @@ end
 
 local function ApplySlotMaintenance(slot, state)
     if not state then return false end
+
     return FeatherNativeMaintenance.Apply(PlayerPedId(), slot, state)
 end
 
@@ -590,10 +685,12 @@ local function SyncSlotMaintenance(slot, state, callback)
         SetTimeout(cooldown, function() SyncSlotMaintenance(slot, state, callback) end)
         return
     end
+
     if not state or maintenanceSyncInFlight[slot] then
         if callback then callback({ ok = true, value = { skipped = true } }) end
         return
     end
+
     local ammoBusy = (slot == 'primary' and (syncInFlight or pairSyncInFlight))
         or (slot == 'offhand' and pairSyncInFlight)
         or (extraSyncInFlight[slot] == true)
@@ -601,11 +698,13 @@ local function SyncSlotMaintenance(slot, state, callback)
         if callback then callback({ ok = true, value = { deferred = true } }) end
         return
     end
+
     local observed = FeatherNativeMaintenance.Read(PlayerPedId(), slot, state)
     if not observed then
         if callback then callback({ ok = true, value = { unavailable = true } }) end
         return
     end
+
     local saved, changed = state.maintenance or {}, false
     for _, field in ipairs({ 'degradation', 'permanentDegradation', 'damage', 'dirt', 'soot' }) do
         if math.abs((tonumber(observed[field]) or 0.0) - (tonumber(saved[field]) or 0.0)) >= 0.005 then
@@ -613,14 +712,18 @@ local function SyncSlotMaintenance(slot, state, callback)
             break
         end
     end
+
     if not changed then
         if callback then callback({ ok = true, value = { unchanged = true } }) end
         return
     end
+
     maintenanceSyncInFlight[slot] = true
     local itemInstanceId, generation = state.itemInstanceId, state.generation
     FeatherCore.RPC.Call('feather-weapons:maintenance:sync', {
-        slot = slot, itemInstanceId = itemInstanceId, generation = generation,
+        slot = slot,
+        itemInstanceId = itemInstanceId,
+        generation = generation,
         maintenance = observed
     }, function(result, rpcError)
         inventoryMutationCooldownUntil = GetGameTimer() + 150
@@ -635,9 +738,11 @@ local function SyncSlotMaintenance(slot, state, callback)
             print(('[feather-weapons] maintenance checkpoint failed slot=%s code=%s'):format(
                 slot, tostring(failure.code)))
         end
+
         if callback then
             callback(result or rpcError or {
-                ok = false, code = 'maintenance_checkpoint_failed',
+                ok = false,
+                code = 'maintenance_checkpoint_failed',
                 message = 'Native weapon maintenance could not be saved.'
             })
         end
@@ -649,15 +754,18 @@ local function CheckpointMaintenance(callback)
         callback({ ok = true, value = { deferred = true } })
         return
     end
+
     local states = {}
     for _, slot in ipairs({ 'primary', 'offhand', 'shoulder', 'back' }) do
         local state = SlotState(slot)
         if state then states[#states + 1] = { slot = slot, state = state } end
     end
+
     if #states == 0 then
         callback({ ok = true, value = { skipped = true } })
         return
     end
+
     maintenanceBatchInFlight = true
     local failure
     local function SyncNext(index)
@@ -666,6 +774,7 @@ local function CheckpointMaintenance(callback)
             callback(failure or { ok = true })
             return
         end
+
         local value = states[index]
         SyncSlotMaintenance(value.slot, value.state, function(result)
             if result and result.ok ~= true then failure = failure or result end
@@ -695,8 +804,7 @@ local function ApplyApprovedPair(primary, secondary)
         return false, message
     end
 
-    local primaryOk, primaryLoaded, offhandOk, offhandLoaded =
-        PairNativeClips(equipped, offhand)
+    local primaryOk, primaryLoaded, offhandOk, offhandLoaded = PairNativeClips(equipped, offhand)
     pairObserved = {
         primary = primaryOk and math.max(0, math.floor(tonumber(primaryLoaded) or 0)) or 0,
         offhand = offhandOk and math.max(0, math.floor(tonumber(offhandLoaded) or 0)) or 0,
@@ -720,11 +828,11 @@ local function ApplyApprovedPair(primary, secondary)
             end
         end
     end)
+
     if Config.DevMode then
         print(('[feather-weapons] pair restored primary=%s/%s offhand=%s/%s total=%d loaded=%d/%d')
-            :format(tostring(equipped.itemInstanceId), equipped.nativeWeaponName,
-                tostring(offhand.itemInstanceId), offhand.nativeWeaponName,
-                pairObserved.total, pairObserved.primary, pairObserved.offhand))
+            :format(tostring(equipped.itemInstanceId), equipped.nativeWeaponName, tostring(offhand.itemInstanceId),
+                offhand.nativeWeaponName, pairObserved.total, pairObserved.primary, pairObserved.offhand))
     end
     ScheduleMaintenanceRestore()
     return true
@@ -747,6 +855,7 @@ local function ApplyApprovedWeapon(approved)
     if not alreadyApplied then
         AwaitSingleNativeRestore(equipped)
     end
+
     ScheduleMaintenanceRestore()
 end
 
@@ -755,6 +864,7 @@ local function FlushConsumption()
         SetTimeout(50, FlushConsumption)
         return
     end
+
     if syncInFlight then return end
 
     if not equipped then
@@ -869,7 +979,6 @@ local function CapturePairNativeState()
     local secondary = offhand
     if not primary or not secondary then return false end
 
-    local ped = PlayerPedId()
     local primaryOk, primaryLoaded, offhandOk, offhandLoaded = ObservablePairClips(primary, secondary)
     if not primaryOk or not offhandOk then return false end
 
@@ -902,10 +1011,12 @@ FlushPairConsumption = function()
         SetTimeout(cooldown, FlushPairConsumption)
         return
     end
+
     if maintenanceSyncInFlight.primary or maintenanceSyncInFlight.offhand then
         SetTimeout(50, FlushPairConsumption)
         return
     end
+
     if pairSyncInFlight then return end
 
     local captured = CapturePairNativeState()
@@ -956,8 +1067,7 @@ FlushPairConsumption = function()
     local submitted = {
         -- Native totals are only a bounded runtime window. Inventory-backed
         -- ownership is reduced exclusively by confirmed per-GUID shots.
-        total = math.max(0, primary.ammo + secondary.ammo
-            - pairConsumed.primary - pairConsumed.offhand),
+        total = math.max(0, primary.ammo + secondary.ammo - pairConsumed.primary - pairConsumed.offhand),
         primaryLoaded = observed.primary,
         offhandLoaded = observed.offhand,
         primaryConsumed = pairConsumed.primary,
@@ -1026,9 +1136,8 @@ FlushPairConsumption = function()
             state.loaded = tonumber(value.loaded) or state.loaded
             state.reserve = tonumber(value.reserve) or state.reserve
             state.condition = tonumber(value.condition) or state.condition
-            pairConsumed[slot] = math.max(0,
-                pairConsumed[slot] - (slot == 'primary'
-                    and submitted.primaryConsumed or submitted.offhandConsumed))
+            pairConsumed[slot] = math.max(0, pairConsumed[slot] - (slot == 'primary'
+                and submitted.primaryConsumed or submitted.offhandConsumed))
         end
 
         -- Depletion fallback is a presentation change, so apply it only after
@@ -1071,7 +1180,7 @@ FlushPairConsumption = function()
 end
 
 function FeatherWeaponsClient.Checkpoint(callback, skipExtras)
-    callback = type(callback) == 'function' and callback or function() end
+    callback = type(callback) == 'function' and callback or function(_result) end
 
     local extras = {}
     for _, slot in ipairs({ 'shoulder', 'back' }) do
@@ -1086,7 +1195,9 @@ function FeatherWeaponsClient.Checkpoint(callback, skipExtras)
             end
             local slot = extras[position]
             FlushExtraSlot(slot, function(result)
-                if not result or not result.ok then callback(result); return end
+                if not result or not result.ok then
+                    callback(result); return
+                end
                 index(position + 1)
             end)
         end
@@ -1231,11 +1342,18 @@ function FeatherWeaponsClient.Reconcile(callback, options)
                     GiveApprovedNativeWeapon(state.nativeWeaponName, state.nativeAmmoName,
                         state.ammo, state.loaded, state.attachments)
                 end
-            elseif extraSlots[slot] then
-                RemoveNativeWeapon(PlayerPedId(), joaat(extraSlots[slot].nativeWeaponName))
-                extraSlots[slot], extraObserved[slot] = nil, nil
+            else
+                local stale = extraSlots[slot]
+                if stale then
+                    if type(stale.nativeWeaponName) == 'string' then
+                        RemoveNativeWeapon(PlayerPedId(), joaat(stale.nativeWeaponName))
+                    end
+                    extraSlots[slot], extraObserved[slot] = nil, nil
+                end
             end
         end
+
+        RefreshSharedLonggunPools()
         ScheduleMaintenanceRestore()
         if options.holster == true and (equipped or offhand or extraSlots.shoulder or extraSlots.back) then
             ScheduleRestoredWeaponsHolster()
@@ -1252,17 +1370,20 @@ FlushExtraSlot = function(slot, callback)
         SetTimeout(50, function() FlushExtraSlot(slot, callback) end)
         return
     end
+
     local state = extraSlots[slot]
     local observed = extraObserved[slot]
     if not state or not observed or extraSyncInFlight[slot] then
         if callback then callback({ ok = true, value = { skipped = true } }) end
         return
     end
+
     local total = math.max(0, state.ammo - observed.consumed)
     if observed.consumed == 0 and observed.loaded == state.loaded then
         if callback then callback({ ok = true, value = state }) end
         return
     end
+
     extraSyncInFlight[slot] = true
     local itemInstanceId, generation = state.itemInstanceId, state.generation
     local submittedConsumed = observed.consumed
@@ -1276,7 +1397,10 @@ FlushExtraSlot = function(slot, callback)
         extraSyncInFlight[slot] = false
         local current = extraSlots[slot]
         if not current or not SameInstance(current.itemInstanceId, itemInstanceId)
-            or current.generation ~= generation then return end
+            or current.generation ~= generation then
+            return
+        end
+
         if result and result.ok then
             current.ammo = tonumber(result.value.total) or total
             current.loaded = tonumber(result.value.loaded) or observed.loaded
@@ -1290,12 +1414,14 @@ FlushExtraSlot = function(slot, callback)
         else
             FeatherWeaponsClient.Reconcile()
         end
+
         if callback then callback(result or { ok = false, error = rpcError }) end
     end)
 end
 
 local function RecoverLostOffhandEntitlement()
     if offhandRecoveryInFlight or not equipped or not offhand then return end
+
     offhandRecoveryInFlight = true
     FeatherWeaponsClient.Checkpoint(function(checkpoint)
         if Config.DevMode then
@@ -1315,32 +1441,30 @@ end
 
 function FeatherWeaponsClient.Equip(itemInstanceId, callback, slot)
     slot = slot or 'auto'
-    FeatherCore.RPC.Call('feather-weapons:equip:request', {
-        itemInstanceId = itemInstanceId, slot = slot
-    }, function(result, rpcError)
-        if not result or not result.ok then
-            if callback then callback(result, rpcError) end
-            return
-        end
+    FeatherCore.RPC.Call('feather-weapons:equip:request', { itemInstanceId = itemInstanceId, slot = slot }, function(result, rpcError)
+    if not result or not result.ok then
+        if callback then callback(result, rpcError) end
+        return
+    end
 
-        local authorization = result.value
-        pendingToken, pendingNativeWeaponName = authorization.token, authorization.nativeWeaponName
+    local authorization = result.value
+    pendingToken, pendingNativeWeaponName = authorization.token, authorization.nativeWeaponName
 
-        FeatherCore.RPC.Call('feather-weapons:equip:acknowledge', { token = authorization.token },
-            function(ack, ackError)
-                if not ack or not ack.ok then
-                    pendingToken, pendingNativeWeaponName = nil, nil
-                    if callback then
-                        callback(ack, ackError)
-                    end
-                    return
-                end
-
+    FeatherCore.RPC.Call('feather-weapons:equip:acknowledge', { token = authorization.token },
+        function(ack, ackError)
+            if not ack or not ack.ok then
                 pendingToken, pendingNativeWeaponName = nil, nil
-                FeatherWeaponsClient.Reconcile(function(reconciled, reconcileError)
-                    if callback then callback(reconciled, reconcileError) end
-                end)
+                if callback then
+                    callback(ack, ackError)
+                end
+                return
+            end
+
+            pendingToken, pendingNativeWeaponName = nil, nil
+            FeatherWeaponsClient.Reconcile(function(reconciled, reconcileError)
+                if callback then callback(reconciled, reconcileError) end
             end)
+        end)
     end)
 end
 
@@ -1350,10 +1474,12 @@ function FeatherWeaponsClient.Unequip(callback, slot)
     -- native weapon is removed so teardown cannot be mistaken for firing.
     FeatherWeaponsClient.Checkpoint(function(checkpoint)
         if not checkpoint or checkpoint.ok ~= true then
-            if callback then callback(checkpoint or {
-                ok = false,
-                error = { message = 'Weapon state could not be saved before unequipping.' }
-            }) end
+            if callback then
+                callback(checkpoint or {
+                    ok = false,
+                    error = { message = 'Weapon state could not be saved before unequipping.' }
+                })
+            end
             return
         end
 
@@ -1502,6 +1628,7 @@ local function UseInventoryWeaponFromAuthoritativeState(itemInstanceId)
             return
         end
     end
+
     if offhand and SameInstance(offhand.itemInstanceId, itemInstanceId) then
         FeatherWeaponsClient.Unequip(function(result, rpcError)
             inventoryWeaponInFlight = false
@@ -1515,6 +1642,7 @@ local function UseInventoryWeaponFromAuthoritativeState(itemInstanceId)
         end, 'offhand')
         return
     end
+
     if equipped and SameInstance(equipped.itemInstanceId, itemInstanceId) then
         local promoting = offhand ~= nil
         FeatherWeaponsClient.Unequip(function(result, rpcError)
@@ -1607,6 +1735,7 @@ local function RequestAttachmentMutation(route, request)
                 or 'Unable to checkpoint weapon ammunition before modification.')
             return
         end
+
         FeatherCore.RPC.Call(route, request, function(result, rpcError)
             HandleAttachmentResult(result or { ok = false, error = rpcError })
         end)
@@ -1617,6 +1746,9 @@ RegisterNetEvent('feather-weapons:client:attachmentResult', HandleAttachmentResu
 
 local Menu = exports['feather-menu-v2']
 local ModificationMenu, RepairMenu, AmmunitionMenu
+local AmmunitionActivityPage, ammunitionActivityInFlight = nil, false
+local ammunitionActivityReturnPage = nil
+local ammunitionActivitySequence = 0
 local ModificationPages = {}
 local ammunitionInventory = {}
 local menuSequence = 0
@@ -1625,6 +1757,7 @@ local function MenuValue(result)
     if type(result) ~= 'table' or result.ok ~= true then
         error(('Weapon menu: %s'):format(type(result) == 'table' and result.message or 'invalid provider response'))
     end
+
     return result.value
 end
 
@@ -1650,6 +1783,7 @@ end
 local function AddWeaponElement(page, kind, settings, callback)
     page.count = page.count + 1
     settings.key = ('%s-%d'):format(kind, page.count)
+
     return MenuValue(Menu:AddElement(page.menuId, page.id, kind, settings, callback))
 end
 
@@ -1667,6 +1801,7 @@ local function WithWeaponMenuReady(build)
             if sequence ~= menuSequence then return end
             build()
         end)
+
         if not success then
             print(('[feather-weapons] %s'):format(tostring(problem)))
             Notify('Unable to open the weapon menu. Check feather-menu-v2 readiness.')
@@ -1676,13 +1811,18 @@ end
 
 AddEventHandler('onClientResourceStop', function(resource)
     if resource ~= 'feather-menu-v2' then return end
+
     menuSequence = menuSequence + 1
     ModificationMenu, RepairMenu, AmmunitionMenu = nil, nil, nil
+    AmmunitionActivityPage, ammunitionActivityInFlight = nil, false
+    ammunitionActivityReturnPage = nil
+    ammunitionActivitySequence = ammunitionActivitySequence + 1
     ModificationPages = {}
 end)
 
 local function ResetModificationPages()
     if ModificationMenu then MenuValue(Menu:DestroyMenu(ModificationMenu)) end
+
     ModificationMenu = CreateWeaponMenu('modifications')
     ModificationPages = {}
 end
@@ -1748,8 +1888,11 @@ local function BuildModificationMenu()
         OpenWeaponPage(selector)
         return
     end
+
     for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
-        if ModificationPages[slot] then OpenWeaponPage(ModificationPages[slot]); return end
+        if ModificationPages[slot] then
+            OpenWeaponPage(ModificationPages[slot]); return
+        end
     end
 end
 
@@ -1816,12 +1959,14 @@ BuildModificationPage = function(slot)
             end)
         end
     end
+
     if ModificationPages.selector then
         AddWeaponElement(page, 'button', { label = 'Back to weapons', slot = 'footer' }, function()
             local selector = ModificationPages.selector
             if selector then MenuValue(Menu:NavigateToPage(ModificationMenu, selector.id)) end
         end)
     end
+
     return page
 end
 
@@ -1850,80 +1995,190 @@ local function OpenModificationMenu()
     WithWeaponMenuReady(BuildModificationMenu)
 end
 
-local function RequestManagedAmmunition(route, request, unload)
+local OpenAmmunitionMenu
+
+local function StopAmmunitionActivity(returnPage)
+    returnPage = returnPage or ammunitionActivityReturnPage
+    ammunitionActivityInFlight = false
+    ammunitionActivityReturnPage = nil
+    ammunitionActivitySequence = ammunitionActivitySequence + 1
+    if returnPage and AmmunitionMenu then
+        MenuValue(Menu:NavigateToPage(AmmunitionMenu, returnPage.id))
+    end
+end
+
+local function StartAmmunitionActivity(returnPage, operation)
+    if ammunitionActivityInFlight or not AmmunitionActivityPage then return false end
+
+    ammunitionActivityInFlight = true
+    ammunitionActivityReturnPage = returnPage
+    ammunitionActivitySequence = ammunitionActivitySequence + 1
+    local sequence = ammunitionActivitySequence
+    MenuValue(Menu:SetElementValue(AmmunitionMenu, AmmunitionActivityPage.id,
+        AmmunitionActivityPage.statusElementId, operation .. '...'))
+    MenuValue(Menu:NavigateToPage(AmmunitionMenu, AmmunitionActivityPage.id))
+    CreateThread(function()
+        local step = 0
+        while ammunitionActivityInFlight and sequence == ammunitionActivitySequence do
+            Wait(350)
+            if not ammunitionActivityInFlight or sequence ~= ammunitionActivitySequence then return end
+
+            step = (step % 3) + 1
+            local result = Menu:SetElementValue(AmmunitionMenu, AmmunitionActivityPage.id,
+                AmmunitionActivityPage.statusElementId, operation .. string.rep('.', step))
+            if type(result) ~= 'table' or result.ok ~= true then
+                StopAmmunitionActivity(returnPage)
+                return
+            end
+        end
+    end)
+    return true
+end
+
+local function AmmunitionVariantLabel(definition, ammunitionId)
+    local label = definition and definition.label or ammunitionId or 'Unknown'
+
+    return label:match('%s%-%s(.+)$') or label
+end
+
+local function RequestManagedAmmunition(route, request, action)
     FeatherWeaponsClient.Checkpoint(function(checkpoint)
         if not checkpoint or not checkpoint.ok then
             local failure = checkpoint and checkpoint.error or nil
-            Notify(failure and failure.message
-                or 'Unable to save the weapon before changing ammunition.')
+            Notify(failure and failure.message or 'Unable to save the weapon before changing ammunition.')
+            StopAmmunitionActivity(action and action.returnPage)
             return
         end
+
         FeatherCore.RPC.Call(route, request, function(result, rpcError)
             result = result or { ok = false, error = rpcError }
             if not result.ok then
                 local failure = result.error or rpcError
                 Notify(failure and failure.message or 'Unable to change weapon ammunition.')
+                StopAmmunitionActivity(action and action.returnPage)
                 return
             end
-            if unload then
-                Notify(('Unloaded %s cartridge%s from %s.'):format(
-                    tostring(result.value.moved), result.value.moved == 1 and '' or 's',
-                    SlotLabel(result.value.slot)))
-                ClearNativeWeapon()
-                FeatherWeaponsClient.Reconcile()
+
+            local moved = tonumber(result.value and result.value.moved) or 0
+            local weaponLabel = action and action.weaponLabel or SlotLabel(request.slot)
+            local ammunitionLabel = action and action.ammunitionLabel or 'cartridges'
+            if action and action.kind == 'unload' then
+                Notify(('Unloaded %d %s cartridge%s from %s.'):format(
+                    moved, ammunitionLabel, moved == 1 and '' or 's', weaponLabel))
+            elseif action and action.kind == 'switch' then
+                Notify(('Switched %s to %s; loaded %d cartridge%s.'):format(
+                    weaponLabel, ammunitionLabel, moved, moved == 1 and '' or 's'))
             else
-                TriggerEvent('feather-weapons:client:inventoryAmmoResult', result)
+                Notify(('Loaded %d %s cartridge%s into %s.'):format(
+                    moved, ammunitionLabel, moved == 1 and '' or 's', weaponLabel))
             end
+
+            ClearNativeWeapon()
+            FeatherWeaponsClient.Reconcile(function(reconciled)
+                if reconciled and reconciled.ok then
+                    OpenAmmunitionMenu(request.slot)
+                else
+                    StopAmmunitionActivity(action and action.returnPage)
+                end
+            end)
         end)
     end)
+end
+
+local function LoadedContainerLabel(weapon)
+    if weapon.family == 'revolver' then return 'Cylinder' end
+
+    if weapon.family == 'shotgun' then return 'Chamber/tube' end
+
+    return 'Magazine'
+end
+
+local function AmmunitionCapacityRemaining(slot, selected, ammunitionId, definition)
+    local maximum = math.max(tonumber(selected.capacity) or 1,
+        math.floor(tonumber(Config.Escrow and Config.Escrow.maxTotal)
+            or tonumber(selected.capacity) or 1))
+    local definitionMaximum = definition and tonumber(definition.maxTotal) or nil
+    if definitionMaximum then
+        maximum = math.min(maximum, math.floor(definitionMaximum))
+    end
+
+    local occupied = selected.ammunitionType == ammunitionId and (tonumber(selected.ammo) or 0) or 0
+    for _, candidate in ipairs(WeaponConstants.LoadoutSlots) do
+        local other = candidate ~= slot and SlotState(candidate) or nil
+        if other and definition and other.nativeAmmoName == definition.nativeAmmoName then
+            occupied = occupied + (tonumber(other.ammo) or 0)
+        end
+    end
+
+    return math.max(0, maximum - occupied)
 end
 
 local function BuildAmmunitionPage(slot)
     local selected = SlotState(slot)
     if not selected then return nil end
-    local page = CreateWeaponPage(AmmunitionMenu,
-        ('feather-weapons:ammunition:%s'):format(slot))
+
+    local page = CreateWeaponPage(AmmunitionMenu, ('feather-weapons:ammunition:%s'):format(slot))
     local weapon = WeaponDefinitionCatalog.weapons[selected.definitionId] or {}
     local current = WeaponDefinitionCatalog.ammunition[selected.ammunitionType] or {}
 
     AddWeaponElement(page, 'header', { value = 'Ammunition Management', slot = 'header' })
+
     AddWeaponElement(page, 'subheader', {
         value = ('%s: %s'):format(SlotLabel(slot), weapon.label or selected.definitionId),
         slot = 'header'
     })
+
     AddWeaponElement(page, 'textdisplay', {
         value = ('Loaded type: %s'):format(current.label or selected.ammunitionType or 'Unknown'),
         slot = 'content'
     })
+
     AddWeaponElement(page, 'textdisplay', {
-        value = ('Chamber/cylinder: %d  |  Reserve: %d  |  Total: %d'):format(
-            tonumber(selected.loaded) or 0, tonumber(selected.reserve) or 0,
+        value = ('%s: %d  |  Reserve: %d  |  Total: %d'):format(
+            LoadedContainerLabel(weapon),
+            tonumber(selected.loaded) or 0,
+            tonumber(selected.reserve) or 0,
             tonumber(selected.ammo) or 0),
         slot = 'content'
     })
+
     AddWeaponElement(page, 'line', { slot = 'content' })
 
     if (tonumber(selected.ammo) or 0) > 0 then
+        local unloadAmount = math.min(10, tonumber(selected.ammo) or 0)
         AddWeaponElement(page, 'button', {
-            label = 'Unload 10 cartridges', slot = 'content'
+            label = ('Unload %d cartridge%s'):format(
+                unloadAmount, unloadAmount == 1 and '' or 's'),
+            slot = 'content'
         }, function()
-            CloseWeaponMenu(AmmunitionMenu)
+            if not StartAmmunitionActivity(page, 'Unloading ammunition') then return end
             RequestManagedAmmunition('feather-weapons:ammo:unload', {
                 slot = slot,
-                amount = 10,
+                amount = unloadAmount,
                 itemInstanceId = selected.itemInstanceId,
                 generation = selected.generation
-            }, true)
+            }, {
+                kind = 'unload',
+                weaponLabel = weapon.label or selected.definitionId,
+                ammunitionLabel = AmmunitionVariantLabel(current, selected.ammunitionType),
+                returnPage = page
+            })
         end)
+
         AddWeaponElement(page, 'button', {
             label = 'Unload all cartridges', slot = 'content'
         }, function()
-            CloseWeaponMenu(AmmunitionMenu)
+            if not StartAmmunitionActivity(page, 'Unloading ammunition') then return end
             RequestManagedAmmunition('feather-weapons:ammo:unload', {
                 slot = slot,
                 itemInstanceId = selected.itemInstanceId,
                 generation = selected.generation
-            }, true)
+            }, {
+                kind = 'unload',
+                weaponLabel = weapon.label or selected.definitionId,
+                ammunitionLabel = AmmunitionVariantLabel(current, selected.ammunitionType),
+                returnPage = page
+            })
         end)
     end
 
@@ -1931,55 +2186,97 @@ local function BuildAmmunitionPage(slot)
     for _, id in ipairs(weapon.ammunitionTypes or {}) do
         local ammunitionId = id
         local definition = WeaponDefinitionCatalog.ammunition[ammunitionId]
-        local available = math.max(0,
-            math.floor(tonumber(ammunitionInventory[ammunitionId]) or 0))
-        if definition and available > 0 and (selected.ammunitionType == ammunitionId
-            or (tonumber(selected.ammo) or 0) == 0) then
+        local available = math.max(0, math.floor(tonumber(ammunitionInventory[ammunitionId]) or 0))
+        if definition and available > 0 then
             local loadLimit = tonumber(Config.Escrow and Config.Escrow.refillAmount) or 50
-            local loadAmount = math.min(loadLimit, available)
-            availableChoices = availableChoices + 1
-            AddWeaponElement(page, 'button', {
-                label = ('Load up to %d: %s (owned: %d)'):format(
-                    loadAmount, definition.label or ammunitionId, available),
-                slot = 'content'
-            }, function()
-                CloseWeaponMenu(AmmunitionMenu)
-                RequestManagedAmmunition('feather-weapons:ammo:loadSlot', {
-                    slot = slot,
-                    amount = loadAmount,
-                    ammunitionType = ammunitionId,
-                    itemInstanceId = selected.itemInstanceId,
-                    generation = selected.generation
-                }, false)
-            end)
+            local remaining = AmmunitionCapacityRemaining(slot, selected, ammunitionId, definition)
+            local loadAmount = math.min(loadLimit, available, remaining)
+            if loadAmount > 0 then
+                local switching = (tonumber(selected.ammo) or 0) > 0 and selected.ammunitionType ~= ammunitionId
+                availableChoices = availableChoices + 1
+                AddWeaponElement(page, 'button', {
+                    label = switching
+                        and ('Switch to %s (owned: %d; load: %d)'):format(definition.label or ammunitionId, available, loadAmount)
+                        or ('Load up to %d: %s (owned: %d)'):format(loadAmount, definition.label or ammunitionId, available),
+                    slot = 'content'
+                }, function()
+                    if not StartAmmunitionActivity(page,
+                            switching and 'Switching ammunition' or 'Loading ammunition') then
+                        return
+                    end
+
+                    RequestManagedAmmunition(switching
+                        and 'feather-weapons:ammo:switchSlot'
+                        or 'feather-weapons:ammo:loadSlot', {
+                            slot = slot,
+                            amount = loadAmount,
+                            ammunitionType = ammunitionId,
+                            itemInstanceId = selected.itemInstanceId,
+                            generation = selected.generation
+                        }, {
+                            kind = switching and 'switch' or 'load',
+                            weaponLabel = weapon.label or selected.definitionId,
+                            ammunitionLabel = AmmunitionVariantLabel(definition, ammunitionId),
+                            returnPage = page
+                        })
+                end)
+            end
         end
     end
+
     if availableChoices == 0 then
         AddWeaponElement(page, 'textdisplay', {
-            value = (tonumber(selected.ammo) or 0) > 0
-                and 'No additional cartridges of the loaded type are in Inventory.'
-                or 'No compatible ammunition is available in Inventory.',
+            value = 'No compatible ammunition can currently be loaded from Inventory.',
             slot = 'content'
         })
     end
+
     return page
 end
 
-local function BuildAmmunitionMenu()
+local function BuildAmmunitionMenu(initialSlot)
     local occupied = {}
     for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
         if SlotState(slot) then occupied[#occupied + 1] = slot end
     end
+
     if #occupied == 0 then
         Notify('Equip a weapon before managing ammunition.')
         return
     end
 
+    ammunitionActivityInFlight = false
+    ammunitionActivityReturnPage = nil
+    ammunitionActivitySequence = ammunitionActivitySequence + 1
     if AmmunitionMenu then MenuValue(Menu:DestroyMenu(AmmunitionMenu)) end
+
     AmmunitionMenu = CreateWeaponMenu('ammunition-management')
+    AmmunitionActivityPage = CreateWeaponPage(AmmunitionMenu, 'feather-weapons:ammunition-activity')
+    AddWeaponElement(AmmunitionActivityPage, 'header', {
+        value = 'Ammunition Management', slot = 'header'
+    })
+
+    AddWeaponElement(AmmunitionActivityPage, 'subheader', {
+        value = 'Updating weapon', slot = 'header'
+    })
+
+    AmmunitionActivityPage.statusElementId = AddWeaponElement(
+        AmmunitionActivityPage, 'textdisplay', {
+            value = 'Working...', slot = 'content'
+        }).elementId
+    AddWeaponElement(AmmunitionActivityPage, 'textdisplay', {
+        value = 'Please wait. Inventory and weapon state are being synchronized.',
+        slot = 'content'
+    })
+
     local pages = {}
     for _, slot in ipairs(occupied) do pages[slot] = BuildAmmunitionPage(slot) end
-    if #occupied == 1 then OpenWeaponPage(pages[occupied[1]]); return end
+
+    if #occupied == 1 then
+        local onlyPage = pages[occupied[1]]
+        if onlyPage then OpenWeaponPage(onlyPage) end
+        return
+    end
 
     local selector = CreateWeaponPage(AmmunitionMenu, 'feather-weapons:ammunition-select-slot')
     AddWeaponElement(selector, 'header', { value = 'Ammunition Management', slot = 'header' })
@@ -1987,41 +2284,53 @@ local function BuildAmmunitionMenu()
     for _, slot in ipairs(occupied) do
         local selectedSlot = slot
         local selected = SlotState(selectedSlot)
-        local weapon = WeaponDefinitionCatalog.weapons[selected.definitionId] or {}
-        AddWeaponElement(selector, 'button', {
-            label = ('%s: %s (%d/%d)'):format(SlotLabel(selectedSlot),
-                weapon.label or selected.definitionId,
-                tonumber(selected.loaded) or 0, tonumber(selected.ammo) or 0),
-            slot = 'content'
-        }, function()
-            MenuValue(Menu:NavigateToPage(AmmunitionMenu, pages[selectedSlot].id))
-        end)
+        local targetPage = pages[selectedSlot]
+        if selected and targetPage then
+            local weapon = WeaponDefinitionCatalog.weapons[selected.definitionId] or {}
+            AddWeaponElement(selector, 'button', {
+                label = ('%s: %s (%d/%d)'):format(SlotLabel(selectedSlot),
+                    weapon.label or selected.definitionId,
+                    tonumber(selected.loaded) or 0, tonumber(selected.ammo) or 0),
+                slot = 'content'
+            }, function()
+                MenuValue(Menu:NavigateToPage(AmmunitionMenu, targetPage.id))
+            end)
+        end
     end
+
     for _, slot in ipairs(occupied) do
         local page = pages[slot]
-        AddWeaponElement(page, 'button', { label = 'Back to weapons', slot = 'footer' }, function()
-            MenuValue(Menu:NavigateToPage(AmmunitionMenu, selector.id))
-        end)
+        if page then
+            AddWeaponElement(page, 'button', { label = 'Back to weapons', slot = 'footer' }, function()
+                MenuValue(Menu:NavigateToPage(AmmunitionMenu, selector.id))
+            end)
+        end
     end
-    OpenWeaponPage(selector)
+
+    local initialPage = initialSlot and pages[initialSlot] or nil
+    OpenWeaponPage(initialPage or selector)
 end
 
-local function OpenAmmunitionMenu()
+OpenAmmunitionMenu = function(initialSlot)
     FeatherWeaponsClient.Checkpoint(function(result)
         if not result or not result.ok then
             local failure = result and result.error or nil
             Notify(failure and failure.message
                 or 'Unable to save weapon ammunition before opening the menu.')
+            StopAmmunitionActivity()
             return
         end
+
         FeatherCore.RPC.Call('feather-weapons:ammo:availability', {}, function(availability, rpcError)
             if not availability or not availability.ok then
                 local failure = availability and availability.error or rpcError
                 Notify(failure and failure.message or 'Unable to read Inventory ammunition.')
+                StopAmmunitionActivity()
                 return
             end
+
             ammunitionInventory = availability.value.quantities or {}
-            WithWeaponMenuReady(BuildAmmunitionMenu)
+            WithWeaponMenuReady(function() BuildAmmunitionMenu(initialSlot) end)
         end)
     end)
 end
@@ -2043,12 +2352,14 @@ local function BuildRepairMenu(selectionSlots)
             end
         end
     end
+
     if #choices < 1 then
         Notify('The equipped weapons changed before repair selection.')
         return
     end
 
     if RepairMenu then MenuValue(Menu:DestroyMenu(RepairMenu)) end
+
     RepairMenu = CreateWeaponMenu('repair-selection')
     local RepairPage = CreateWeaponPage(RepairMenu, 'repair-slot')
     AddWeaponElement(RepairPage, 'header', { value = 'Repair Weapon', slot = 'header' })
@@ -2058,8 +2369,7 @@ local function BuildRepairMenu(selectionSlots)
         local selected = choice
         local location = ({ primary = true, offhand = true, shoulder = true, back = true })[choice.location]
             and SlotLabel(choice.location) or tostring(choice.location or 'Inventory')
-        AddWeaponElement(RepairPage, 'button', {
-            label = ('%s: %s (%s%%)'):format(location,
+        AddWeaponElement(RepairPage, 'button', { label = ('%s: %s (%s%%)'):format(location,
                 choice.definitionId or 'Weapon', tostring(choice.condition or 0)),
             slot = 'content'
         }, function()
@@ -2091,6 +2401,7 @@ RegisterNetEvent('feather-weapons:client:inventoryAmmoResult', function(result)
             or (result.error and result.error.message or 'Unable to escrow ammunition.'))
         return
     end
+
     if result and result.ok and (equipped or offhand or extraSlots.shoulder or extraSlots.back) then
         local slot = result.value.slot or 'primary'
         local state = SlotState(slot)
@@ -2103,47 +2414,57 @@ RegisterNetEvent('feather-weapons:client:inventoryAmmoResult', function(result)
         state.loaded = tonumber(result.value.loaded) or state.loaded
         state.reserve = tonumber(result.value.reserve) or (state.ammo - state.loaded)
         if slot == 'primary' or slot == 'offhand' then
-            if offhand then
-            if pairSingleFallback and equipped.loaded > 0 and offhand.loaded > 0 then
-                local restored, message = RestoreApprovedNativePair(equipped, offhand)
-                if not restored then
-                    Notify(message or 'Unable to restore the reloaded weapon pair.')
-                    FeatherWeaponsClient.Reconcile()
-                    return
+            local primary = equipped
+            local secondary = offhand
+            if not primary then
+                Notify('Primary weapon state changed while updating ammunition.')
+                FeatherWeaponsClient.Reconcile()
+                return
+            end
+
+            if secondary then
+                if pairSingleFallback and primary.loaded > 0 and secondary.loaded > 0 then
+                    local restored, message = RestoreApprovedNativePair(primary, secondary)
+                    if not restored then
+                        Notify(message or 'Unable to restore the reloaded weapon pair.')
+                        FeatherWeaponsClient.Reconcile()
+                        return
+                    end
+
+                    pairSingleFallback, pairFallbackPending = nil, nil
+                    local primaryOk, primaryLoaded, offhandOk, offhandLoaded = PairNativeClips(primary, secondary)
+                    pairObserved = {
+                        primary = primaryOk and math.max(0, math.floor(tonumber(primaryLoaded) or 0)) or 0,
+                        offhand = offhandOk and math.max(0, math.floor(tonumber(offhandLoaded) or 0)) or 0,
+                        total = PairNativeTotal(primary, secondary)
+                    }
+                    FeatherNativeWeaponCoordinator.TrackAmmoWindows(PlayerPedId(), {
+                        primary = primary,
+                        offhand = secondary
+                    })
+                    if Config.DevMode then
+                        print(('[feather-weapons] funded pair restored slot=%s loaded=%d/%d')
+                            :format(slot, pairObserved.primary, pairObserved.offhand))
+                    end
                 end
-                pairSingleFallback, pairFallbackPending = nil, nil
-                local primaryOk, primaryLoaded, offhandOk, offhandLoaded =
-                    PairNativeClips(equipped, offhand)
-                pairObserved = {
-                    primary = primaryOk and math.max(0, math.floor(tonumber(primaryLoaded) or 0)) or 0,
-                    offhand = offhandOk and math.max(0, math.floor(tonumber(offhandLoaded) or 0)) or 0,
-                    total = PairNativeTotal(equipped, offhand)
-                }
+
+                local pairTotal = primary.ammo + secondary.ammo
+                if primary.nativeAmmoName == secondary.nativeAmmoName then
+                    SetPedAmmoByType(PlayerPedId(), joaat(primary.nativeAmmoName), pairTotal)
+                else
+                    SetPedAmmoByType(PlayerPedId(), joaat(state.nativeAmmoName), state.ammo)
+                end
+
+                pairObserved = pairObserved or {}
+                pairObserved.total = PairNativeTotal(primary, secondary)
                 FeatherNativeWeaponCoordinator.TrackAmmoWindows(PlayerPedId(), {
-                    primary = equipped,
-                    offhand = offhand
+                    primary = primary,
+                    offhand = secondary
                 })
-                if Config.DevMode then
-                    print(('[feather-weapons] funded pair restored slot=%s loaded=%d/%d')
-                        :format(slot, pairObserved.primary, pairObserved.offhand))
-                end
-            end
-            local pairTotal = equipped.ammo + offhand.ammo
-            if equipped.nativeAmmoName == offhand.nativeAmmoName then
-                SetPedAmmoByType(PlayerPedId(), joaat(equipped.nativeAmmoName), pairTotal)
             else
-                SetPedAmmoByType(PlayerPedId(), joaat(state.nativeAmmoName), state.ammo)
-            end
-            pairObserved = pairObserved or {}
-            pairObserved.total = PairNativeTotal(equipped, offhand)
-            FeatherNativeWeaponCoordinator.TrackAmmoWindows(PlayerPedId(), {
-                primary = equipped,
-                offhand = offhand
-            })
-            else
-            desiredAmmo, desiredLoaded = equipped.ammo, equipped.loaded
-            SetNativeAmmo(result.value.nativeAmmoName or equipped.nativeAmmoName,
-                equipped.ammo, equipped.nativeWeaponName, equipped.loaded)
+                desiredAmmo, desiredLoaded = primary.ammo, primary.loaded
+                SetNativeAmmo(result.value.nativeAmmoName or primary.nativeAmmoName,
+                    primary.ammo, primary.nativeWeaponName, primary.loaded)
             end
         else
             extraObserved[slot] = { loaded = state.loaded, consumed = 0 }
@@ -2185,23 +2506,12 @@ end
 
 if Config.Controls and Config.Controls.ammunition and Config.Controls.ammunition.enabled then
     local ammunitionControl = Config.Controls.ammunition
-    RegisterCommand(ammunitionControl.command, OpenAmmunitionMenu, false)
-    RegisterKeyMapping(ammunitionControl.command, 'Manage equipped weapon ammunition',
-        'keyboard', ammunitionControl.defaultKey or 'F7')
+    RegisterCommand(ammunitionControl.command, function() OpenAmmunitionMenu() end, false)
+    RegisterKeyMapping(ammunitionControl.command, 'Manage equipped weapon ammunition', 'keyboard', ammunitionControl.defaultKey or 'F7')
 end
 
 CreateThread(function()
-    local interval = math.max(1000, math.floor(tonumber(
-        Config.Runtime and Config.Runtime.maintenanceCheckpointMs) or 5000))
-    while true do
-        Wait(interval)
-        CheckpointMaintenance(function() end)
-    end
-end)
-
-CreateThread(function()
-    local interval = math.max(1000, math.floor(tonumber(
-        Config.Runtime and Config.Runtime.maintenanceCheckpointMs) or 5000))
+    local interval = math.max(1000, math.floor(tonumber(Config.Runtime and Config.Runtime.maintenanceCheckpointMs) or 5000))
     while true do
         Wait(interval)
         CheckpointMaintenance(function() end)
@@ -2220,6 +2530,7 @@ CreateThread(function()
             and not presentationRestoreInFlight then
             local ped = PlayerPedId()
             if NativeTrue(IsPedShooting(ped)) then fireWindowUntil = GetGameTimer() + 250 end
+
             local itemInstanceId = equipped.itemInstanceId
             local generation = equipped.generation
             local ammoHash = equipped.nativeAmmoName and joaat(equipped.nativeAmmoName) or nil
@@ -2331,6 +2642,7 @@ CreateThread(function()
                     else
                         pairFallbackPending = nil
                     end
+
                     if primaryLoaded < pairObserved.primary then
                         pairConsumed.primary = pairConsumed.primary + (pairObserved.primary - primaryLoaded)
                     end
@@ -2369,15 +2681,14 @@ end)
 
 CreateThread(function()
     local runtimeConfig = Config.Runtime or {}
-    local observationInterval = math.max(25,
-        math.floor(tonumber(runtimeConfig.observationIntervalMs) or 50))
-    local checkpointDebounce = math.max(0,
-        math.floor(tonumber(runtimeConfig.checkpointDebounceMs) or 250))
+    local observationInterval = math.max(25, math.floor(tonumber(runtimeConfig.observationIntervalMs) or 50))
+    local checkpointDebounce = math.max(0, math.floor(tonumber(runtimeConfig.checkpointDebounceMs) or 250))
     local fireWindowUntil = 0
     while true do
         local active = false
         local ped = PlayerPedId()
         if NativeTrue(IsPedShooting(ped)) then fireWindowUntil = GetGameTimer() + 250 end
+
         local selectedOk, selectedWeapon = GetCurrentPedWeapon(ped, true, 0, false)
         for _, slot in ipairs({ 'shoulder', 'back' }) do
             local state = extraSlots[slot]
@@ -2393,6 +2704,7 @@ CreateThread(function()
                         and selectedWeapon == weaponHash then
                         observed.consumed = observed.consumed + (observed.loaded - loaded)
                     end
+
                     local changed = loaded ~= observed.loaded
                     observed.loaded = loaded
                     if changed then
@@ -2424,7 +2736,9 @@ CreateThread(function()
             for _, slot in ipairs({ 'shoulder', 'back' }) do
                 local state = extraSlots[slot]
                 local other = extraSlots[slot == 'shoulder' and 'back' or 'shoulder']
-                if state and other and state.nativeAmmoName == other.nativeAmmoName
+                if state and other and type(state.nativeAmmoName) == 'string'
+                    and type(state.nativeWeaponName) == 'string'
+                    and state.nativeAmmoName == other.nativeAmmoName
                     and joaat(state.nativeWeaponName) == selectedWeapon then
                     selectedSlot, selectedState = slot, state
                     break
@@ -2432,32 +2746,33 @@ CreateThread(function()
             end
         end
 
-        if selectedState then
+        if selectedState and selectedSlot then
             DisableControlAction(0, joaat('INPUT_RELOAD'), true)
             if IsDisabledControlJustPressed(0, joaat('INPUT_RELOAD'))
                 and not longgunReloadInFlight then
                 local nativeAmmoName = selectedState.nativeAmmoName
-                local loadedTotal, selectedLoaded = 0, selectedState.loaded
+                local loadedTotal = 0
+                local selectedLoaded = math.max(0,
+                    math.floor(tonumber(selectedState.loaded) or 0))
+                local authorized = 0
                 local intendedClips = {}
                 for _, slot in ipairs({ 'shoulder', 'back' }) do
                     local state = extraSlots[slot]
                     if state and state.nativeAmmoName == nativeAmmoName then
                         local clipOk, loaded = GetAmmoInClip(ped, joaat(state.nativeWeaponName))
-                        loaded = NativeTrue(clipOk) and math.max(0,
-                            math.floor(tonumber(loaded) or 0)) or state.loaded
+                        loaded = NativeTrue(clipOk) and math.max(0, math.floor(tonumber(loaded) or 0)) or state.loaded
                         local observed = extraObserved[slot]
-                        intendedClips[slot] = math.max(0,
-                            math.floor(tonumber(observed and observed.loaded) or state.loaded or loaded))
+                        intendedClips[slot] = math.max(0, math.floor(tonumber(observed and observed.loaded) or state.loaded or loaded))
                         loadedTotal = loadedTotal + intendedClips[slot]
+                        authorized = authorized + math.max(0,
+                            math.floor(tonumber(state.ammo) or 0)
+                                - math.floor(tonumber(observed and observed.consumed) or 0))
                         if slot == selectedSlot then selectedLoaded = loaded end
                     end
                 end
-                local authorized = math.max(0,
-                    math.floor(tonumber(longgunPoolAuthorized[nativeAmmoName]) or loadedTotal))
-                local capacity = math.max(selectedLoaded,
-                    math.floor(tonumber(selectedState.capacity) or 0))
-                local amount = math.min(math.max(0, capacity - selectedLoaded),
-                    math.max(0, authorized - loadedTotal))
+
+                local capacity = math.max(selectedLoaded, math.floor(tonumber(selectedState.capacity) or 0))
+                local amount = math.min(math.max(0, capacity - selectedLoaded), math.max(0, authorized - loadedTotal))
                 if amount > 0 then
                     intendedClips[selectedSlot] = selectedLoaded + amount
                     longgunReloadInFlight = true
@@ -2465,37 +2780,44 @@ CreateThread(function()
                         print(('[feather-weapons] shared long-gun reload requested slot=%s loaded=%d amount=%d authorized=%d clips=%d')
                             :format(selectedSlot, selectedLoaded, amount, authorized, loadedTotal))
                     end
-                    AddAmmoToPedByType(ped, joaat(nativeAmmoName), amount, 0)
+                    Citizen.InvokeNative(0x106A811C6D3035F3, ped, joaat(nativeAmmoName), amount, joaat('ADD_REASON_DEFAULT')) -- AddAmmoToPedByType
                     MakePedReload(ped)
                     CreateThread(function()
                         local deadline = GetGameTimer() + 2000
-                        repeat Wait(25) until NativeTrue(IsPedReloading(ped))
+                        repeat
+                            Wait(25)
+                        until NativeTrue(IsPedReloading(ped))
                             or GetGameTimer() >= deadline
                         if not NativeTrue(IsPedReloading(ped)) then
                             TaskReloadWeapon(ped, false)
                             deadline = GetGameTimer() + 3000
-                            repeat Wait(25) until NativeTrue(IsPedReloading(ped))
+                            repeat
+                                Wait(25)
+                            until NativeTrue(IsPedReloading(ped))
                                 or GetGameTimer() >= deadline
                         end
+
                         local started = NativeTrue(IsPedReloading(ped))
                         if NativeTrue(IsPedReloading(ped)) then
                             deadline = GetGameTimer() + 5000
-                            repeat Wait(25) until not NativeTrue(IsPedReloading(ped))
+                            repeat
+                                Wait(25)
+                            until not NativeTrue(IsPedReloading(ped))
                                 or GetGameTimer() >= deadline
                         end
+
                         local clipTotal = 0
                         for _, slot in ipairs({ 'shoulder', 'back' }) do
                             local state = extraSlots[slot]
                             if state and state.nativeAmmoName == nativeAmmoName then
-                                local loaded = math.max(0,
-                                    math.floor(tonumber(intendedClips[slot]) or state.loaded or 0))
+                                local loaded = math.max(0, math.floor(tonumber(intendedClips[slot]) or state.loaded or 0))
                                 SetAmmoInClip(ped, joaat(state.nativeWeaponName), loaded)
                                 extraObserved[slot] = { loaded = loaded, consumed = 0 }
                                 clipTotal = clipTotal + loaded
                             end
                         end
-                        ApplyLonggunAmmoPool(nativeAmmoName, clipTotal, false)
-                        longgunPoolObserved[nativeAmmoName] = clipTotal
+
+                        SetPedAmmoByType(ped, joaat(nativeAmmoName), clipTotal)
                         longgunReloadInFlight = false
                         FlushExtraSlot(selectedSlot)
                         if Config.DevMode then
@@ -2514,8 +2836,7 @@ end)
 
 CreateThread(function()
     while true do
-        if equipped and equipped.attachments and #equipped.attachments > 0
-            and GetGameTimer() < attachmentReconcileUntil then
+        if equipped and equipped.attachments and #equipped.attachments > 0 and GetGameTimer() < attachmentReconcileUntil then
             ApplyNativeAttachments(equipped.nativeWeaponName, equipped.attachments)
             Wait(500)
         else
@@ -2539,11 +2860,11 @@ local function RestoreRuntimeWeapons()
         if not prepared.ok then
             Notify(prepared.message or 'The native carried-weapon inventory did not become ready.')
             if Config.DevMode then
-                print(('[feather-weapons] restore deferred code=%s message=%s'):format(
-                    tostring(prepared.code), tostring(prepared.message)))
+                print(('[feather-weapons] restore deferred code=%s message=%s'):format(tostring(prepared.code), tostring(prepared.message)))
             end
             return
         end
+
         if Config.DevMode then
             print('[feather-weapons] native character weapon inventory prepared')
         end
@@ -2585,16 +2906,18 @@ end
 exports('CheckpointBeforeLogout', function()
     local deadline = GetGameTimer() + 2000
     while (longgunReloadInFlight or syncInFlight or pairSyncInFlight
-        or extraSyncInFlight.shoulder or extraSyncInFlight.back
-        or maintenanceSyncInFlight.primary or maintenanceSyncInFlight.offhand
-        or maintenanceSyncInFlight.shoulder or maintenanceSyncInFlight.back)
+            or extraSyncInFlight.shoulder or extraSyncInFlight.back
+            or maintenanceSyncInFlight.primary or maintenanceSyncInFlight.offhand
+            or maintenanceSyncInFlight.shoulder or maintenanceSyncInFlight.back)
         and GetGameTimer() < deadline do
         Wait(25)
     end
+
     local maintenancePending = promise.new()
     CheckpointMaintenance(function(result)
         maintenancePending:resolve(result)
     end)
+
     local maintenance = Citizen.Await(maintenancePending)
     if not maintenance or maintenance.ok ~= true then return maintenance end
 
@@ -2673,17 +2996,16 @@ if Config.DevMode then
                 tostring(pairObserved and pairObserved.total)))
         print(('[feather-weapons] runtime checkpoint longguns inFlight=%s/%s consumed=%s/%s observed=%s/%s')
             :format(tostring(extraSyncInFlight.shoulder), tostring(extraSyncInFlight.back),
-                tostring(extraObserved.shoulder and extraObserved.shoulder.consumed),
-                tostring(extraObserved.back and extraObserved.back.consumed),
-                tostring(extraObserved.shoulder and extraObserved.shoulder.loaded),
-                tostring(extraObserved.back and extraObserved.back.loaded)))
+                tostring(extraObserved.shoulder and rawget(extraObserved.shoulder, 'consumed')),
+                tostring(extraObserved.back and rawget(extraObserved.back, 'consumed')),
+                tostring(extraObserved.shoulder and rawget(extraObserved.shoulder, 'loaded')),
+                tostring(extraObserved.back and rawget(extraObserved.back, 'loaded'))))
         for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
             local state = SlotState(slot)
             if state then
                 local clipOk, loaded
                 if (slot == 'primary' or slot == 'offhand') and equipped and offhand then
-                    local primaryOk, primaryLoaded, offhandOk, offhandLoaded =
-                        PairNativeClips(equipped, offhand)
+                    local primaryOk, primaryLoaded, offhandOk, offhandLoaded = PairNativeClips(equipped, offhand)
                     if slot == 'primary' then
                         clipOk, loaded = primaryOk, primaryLoaded
                     else
@@ -2692,20 +3014,21 @@ if Config.DevMode then
                 else
                     clipOk, loaded = GetAmmoInClip(ped, joaat(state.nativeWeaponName))
                 end
+
                 print(('[feather-weapons] runtime local %s item=%s generation=%s total=%s loaded=%s reserve=%s nativeLoaded=%s clipOk=%s')
                     :format(slot, tostring(state.itemInstanceId), tostring(state.generation),
                         tostring(state.ammo), tostring(state.loaded), tostring(state.reserve),
                         tostring(loaded), tostring(clipOk)))
             end
         end
+
         local reportedPools = {}
         for _, slot in ipairs(WeaponConstants.LoadoutSlots) do
             local state = SlotState(slot)
             if state and state.nativeAmmoName and not reportedPools[state.nativeAmmoName] then
                 reportedPools[state.nativeAmmoName] = true
                 print(('[feather-weapons] runtime ammo %s nativeTotal=%s')
-                    :format(state.nativeAmmoName,
-                        tostring(GetPedAmmoByType(ped, joaat(state.nativeAmmoName)))))
+                    :format(state.nativeAmmoName, tostring(GetPedAmmoByType(ped, joaat(state.nativeAmmoName)))))
             end
         end
 
@@ -2726,8 +3049,7 @@ if Config.DevMode then
         for _, attachPoint in ipairs({ 0, 1, 2, 3,
             Config.Loadout.shoulderAttachPoint, Config.Loadout.backAttachPoint }) do
             local present, weaponHash = GetCurrentPedWeapon(ped, true, attachPoint, true)
-            points[#points + 1] = ('%d=%s/%s/%s'):format(attachPoint,
-                tostring(present), tostring(weaponHash),
+            points[#points + 1] = ('%d=%s/%s/%s'):format(attachPoint, tostring(present), tostring(weaponHash),
                 tostring(GetCurrentPedWeaponEntityIndex(ped, attachPoint)))
         end
         print(('[feather-weapons] runtime points [%s]'):format(table.concat(points, ', ')))
@@ -2751,6 +3073,7 @@ if Config.DevMode then
                         :format(tostring(nativeAmmoName), tostring(window.authorized),
                             tostring(window.ceiling), tostring(window.observed)))
                 end
+
                 local state = result.value.equipped
                 local slots = result.value.slots or {}
                 local secondary = slots.offhand
@@ -2762,8 +3085,7 @@ if Config.DevMode then
                         tostring(state and state.ammo), tostring(state and state.loaded),
                         tostring(state and state.reserve), tostring(state and state.condition)))
                 if state then
-                    print(('[feather-weapons] ammo type=%s native=%s'):format(
-                        tostring(state.ammunitionType), tostring(state.nativeAmmoName)))
+                    print(('[feather-weapons] ammo type=%s native=%s'):format(tostring(state.ammunitionType), tostring(state.nativeAmmoName)))
                     local attachmentIds = {}
                     for _, attachment in ipairs(state.attachments or {}) do
                         attachmentIds[#attachmentIds + 1] = tostring(attachment.definitionId)
@@ -2779,6 +3101,7 @@ if Config.DevMode then
                     else
                         clipOk, nativeLoaded = GetAmmoInClip(ped, joaat(state.nativeWeaponName))
                     end
+
                     local nativeTotal = GetPedAmmoByType(ped, joaat(state.nativeAmmoName))
                     print(('[feather-weapons] native total=%s loaded=%s clipOk=%s'):format(
                         tostring(nativeTotal), tostring(nativeLoaded), tostring(clipOk)))
@@ -2788,7 +3111,8 @@ if Config.DevMode then
                     print(('[feather-weapons] offhand ammo type=%s native=%s'):format(
                         tostring(secondary.ammunitionType), tostring(secondary.nativeAmmoName)))
                     local _, _, clipOk, nativeLoaded = PairNativeClips(state, secondary)
-                    print(('[feather-weapons] offhand item=%s generation=%s total=%s loaded=%s reserve=%s condition=%s attachments=%s nativeLoaded=%s clipOk=%s'):format(
+                    print(('[feather-weapons] offhand item=%s generation=%s total=%s loaded=%s reserve=%s condition=%s attachments=%s nativeLoaded=%s clipOk=%s')
+                    :format(
                         tostring(secondary.itemInstanceId), tostring(secondary.generation),
                         tostring(secondary.ammo), tostring(secondary.loaded),
                         tostring(secondary.reserve), tostring(secondary.condition),
@@ -2801,6 +3125,7 @@ if Config.DevMode then
                         tostring(pairConsumed.primary), tostring(pairConsumed.offhand)
                     ))
                 end
+
                 for _, slot in ipairs({ 'shoulder', 'back' }) do
                     local longgun = result.value.slots and result.value.slots[slot] or nil
                     if longgun then
@@ -2824,7 +3149,8 @@ if Config.DevMode then
             end
 
             local failure = result and result.error or rpcError
-            print(('[feather-weapons] state failed: %s'):format(failure and (tostring(failure.code) .. ' - ' .. tostring(failure.message)) or 'no response'))
+            print(('[feather-weapons] state failed: %s'):format(failure and
+            (tostring(failure.code) .. ' - ' .. tostring(failure.message)) or 'no response'))
         end)
     end, false)
 

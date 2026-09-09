@@ -428,5 +428,6 @@ AddEventHandler("core.session.left.v1", function(session)
 end)
 
 AddEventHandler("playerDropped", function()
-    WeaponRuntime.Clear(source)
+    local playerSource = source
+    WeaponRuntime.Clear(playerSource)
 end)

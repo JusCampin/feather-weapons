@@ -9,10 +9,10 @@ end
 
 GetGameTimer = function() return 100 end
 vector3 = function(x, y, z) return { x = x, y = y, z = z } end
-SetTimeout = function() end
-AddEventHandler = function() end
-TriggerClientEvent = function() end
-FeatherCore = { RPC = { Register = function() end } }
+SetTimeout = function(_delay, _callback) end
+AddEventHandler = function(_eventName, _callback) end
+TriggerClientEvent = function(_eventName, _target, ...) end
+FeatherCore = { RPC = { Register = function(_route, _callback, _options) end } }
 for _, file in ipairs({ 'config.lua', 'shared/constants.lua', 'shared/errors.lua',
     'shared/definitions/ammunition.lua', 'shared/definitions/attachments.lua',
     'shared/definitions/weapons.lua', 'shared/validation.lua',
@@ -24,12 +24,13 @@ Config.DevMode = false
 assert(DefinitionRegistry.Start().ok)
 local items, stock, rejectBatch, rejectTransaction
 local context = { characterId = 1, sessionId = 'test', correlationId = 'test' }
-InventoryAdapter = {}
-function InventoryAdapter.GetItemForCharacter(_, id)
+local TestInventoryAdapter = {}
+InventoryAdapter = TestInventoryAdapter
+function TestInventoryAdapter.GetItemForCharacter(_, id)
     return items[id] and WeaponResult.Ok(copy(items[id]))
         or WeaponResult.Error('missing', 'Missing item')
 end
-function InventoryAdapter.MutateWeaponMetadataBatch(_, mutations)
+function TestInventoryAdapter.MutateWeaponMetadataBatch(_, mutations)
     if rejectBatch then return WeaponResult.Error('conflict', 'Injected conflict') end
     for _, mutation in ipairs(mutations) do
         if items[mutation.itemInstanceId].metadataRevision ~= mutation.expectedRevision then
@@ -43,7 +44,7 @@ function InventoryAdapter.MutateWeaponMetadataBatch(_, mutations)
     end
     return WeaponResult.Ok(true)
 end
-function InventoryAdapter.Transaction(_, callback)
+function TestInventoryAdapter.Transaction(_, callback)
     local staged, quantities = copy(items), copy(stock)
     local tx = {}
     function tx:GetItemForUpdate(id) return staged[id] end
@@ -142,6 +143,17 @@ local managedUnload = AmmoService.Unload(1, context, 10, 'offhand', {
 check(managedUnload.ok and items[2].metadata.ammo.loaded == 6
     and items[2].metadata.ammo.reserve == 34 and stock.ammo_revolver_regular == 10,
     'Managed unload returns ammunition from only the requested slot')
+local switchLease = WeaponRuntime.Get(1).slots.offhand
+local managedSwitch = AmmoService.SwitchSlot(1, context, {
+    slot = 'offhand', ammunitionType = 'ammo_revolver_express', amount = 50,
+    itemInstanceId = switchLease.itemInstanceId, generation = switchLease.generation
+})
+check(managedSwitch.ok and managedSwitch.reconcile == true
+    and managedSwitch.value.moved == 7 and managedSwitch.value.returned == 40
+    and items[2].metadata.ammo.type == 'ammo_revolver_express'
+    and items[2].metadata.ammo.loaded == 6 and items[2].metadata.ammo.reserve == 1
+    and stock.ammo_revolver_regular == 50 and stock.ammo_revolver_express == 0,
+    'Managed ammunition switch is atomic and slot scoped')
 
 for _, second in ipairs({ 'revolver_schofield', 'revolver_cattleman' }) do
     reset('revolver_cattleman', second)
