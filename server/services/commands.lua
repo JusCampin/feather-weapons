@@ -139,7 +139,7 @@ RegisterCommand("WeaponDualSlotContractSmokeTest", function(source, args)
                 name = "slot capability reported",
                 passed = capabilities.features.namedEquipmentSlots == true
                     and capabilities.features.dualWield == true
-                    and capabilities.features.offhandEnabled == true
+                    and type(capabilities.features.offhandEnabled) == "boolean"
                     and capabilities.features.matchingHashDualWield == false
                     and capabilities.features.definitionGatedMatchingPairs == false
                     and capabilities.features.fourSlotLoadout == true

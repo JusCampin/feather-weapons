@@ -83,7 +83,14 @@ local function PairNativeTotal(primary, secondary)
     local primaryTotal = math.max(0, math.floor(tonumber(GetPedAmmoByType(ped, joaat(primary.nativeAmmoName))) or 0))
     if primary.nativeAmmoName == secondary.nativeAmmoName then return primaryTotal end
 
-    return primaryTotal + math.max(0, math.floor(tonumber(GetPedAmmoByType(ped, joaat(secondary.nativeAmmoName))) or 0))
+    -- RedM mirrors a materialized clip into the other ammo-type pool, and its
+    -- per-GUID total getter mirrors the same value. Neither total can represent
+    -- distinct Inventory ownership. Ownership changes only through confirmed
+    -- per-weapon clip decreases, so expose the bounded escrow window here.
+    return math.max(0, math.floor((tonumber(primary.ammo) or 0)
+        + (tonumber(secondary.ammo) or 0)
+        - (tonumber(pairConsumed.primary) or 0)
+        - (tonumber(pairConsumed.offhand) or 0)))
 end
 
 local function IsDualSidearmPair(primary, secondary)
@@ -103,14 +110,40 @@ local function ActivateLoadedPairSlot(ped, slot, state)
     pairSingleFallback = slot
     SetAllowDualWield(ped, false)
     local depleted = slot == 'primary' and offhand or equipped
+    local function LogFallbackAmmo(stage)
+        if not Config.DevMode then return end
+        for role, weapon in pairs({ survivor = state, depleted = depleted }) do
+            if weapon.nativeWeaponName and weapon.nativeAmmoName then
+                local ok, loaded = GetAmmoInClip(ped, joaat(weapon.nativeWeaponName))
+                print(('[feather-weapons] fallback ammo stage=%s role=%s item=%s generation=%s ammo=%s authorized=%s pool=%s clipOk=%s clip=%s')
+                    :format(stage, role, tostring(weapon.itemInstanceId), tostring(weapon.generation),
+                        weapon.nativeAmmoName, tostring(weapon.ammo),
+                        tostring(GetPedAmmoByType(ped, joaat(weapon.nativeAmmoName))),
+                        tostring(NativeTrue(ok)), tostring(loaded)))
+            end
+        end
+    end
+    LogFallbackAmmo('before-removal')
     if depleted and depleted.nativeWeaponName then
         RemoveNativeWeapon(ped, joaat(depleted.nativeWeaponName))
+        LogFallbackAmmo('after-removal')
+        -- Removing an empty hand can leave its old clip in a distinct native
+        -- pool. That residual makes the next checkpoint exceed the pair lease
+        -- and blocks the ammunition menu even though Inventory unload succeeded.
+        -- Never clear a shared pool or ammunition still owned by this item.
+        if tonumber(depleted.ammo) == 0 and depleted.nativeAmmoName
+            and depleted.nativeAmmoName ~= state.nativeAmmoName then
+            SetPedAmmoByType(ped, joaat(depleted.nativeAmmoName), 0)
+            LogFallbackAmmo('after-zero')
+        end
     end
     -- Once dual wield is disabled, the surviving weapon must become the
     -- primary-hand selection (attach point 0), regardless of which pair slot
     -- owned it. Passing its holster point leaves RedM on the empty primary.
     SetCurrentPedWeapon(ped, joaat(state.nativeWeaponName), true, 0, false, false)
+    LogFallbackAmmo('after-selection')
     Wait(0)
+    LogFallbackAmmo('settled')
     if Config.DevMode then
         local selectedOk, selectedHash = GetCurrentPedWeapon(ped, true, 0, false)
         print(('[feather-weapons] pair depleted; single-weapon fallback slot=%s weapon=%s selected=%s/%s')
@@ -380,6 +413,11 @@ local function RestoreApprovedNativePair(primary, secondary)
 
     local sharedAmmo = primary.nativeAmmoName == secondary.nativeAmmoName
     if dualSidearms then
+        -- Match single-weapon restore: clear hash-cached ammunition before
+        -- recreating either hand. Clear both first because their default ammo
+        -- pools may overlap even when their approved selected types differ.
+        SetPedAmmo(ped, primaryHash, 0)
+        SetPedAmmo(ped, secondaryHash, 0)
         GiveWeaponToPed(ped, primaryHash, 0, true, false,
             primaryPoint, false, 0.5, 1.0, joaat('ADD_REASON_DEFAULT'), true, 0.0, false)
 
@@ -394,32 +432,149 @@ local function RestoreApprovedNativePair(primary, secondary)
             secondaryAmmo, secondaryLoaded, secondary.attachments)
     end
 
-    -- Select the approved type before native reload; identical copies require
-    -- GUID addressing because a hash cannot distinguish the two inventories.
+    -- Make approved distinct ammunition available before requesting selection.
+    -- RedM credits materialized clips to the hash-reported type even when the
+    -- Inventory GUID selects a special type, so subtract those future credits
+    -- from the initial pool targets. This avoids an excess that native setters
+    -- cannot lower after the clips exist.
+    if not sharedAmmo then
+        local primaryAmmoHash = joaat(primary.nativeAmmoName)
+        local secondaryAmmoHash = joaat(secondary.nativeAmmoName)
+        local primarySelectedHash = tonumber(Citizen.InvokeNative(
+            0x7FEAD38B326B9F74, ped, primaryHash))
+        local secondarySelectedHash = tonumber(Citizen.InvokeNative(
+            0x7FEAD38B326B9F74, ped, secondaryHash))
+        local function SameHash(left, right)
+            return left ~= nil and (math.floor(left) & 0xffffffff) == (right & 0xffffffff)
+        end
+        local function CreditedClipTotal(ammoHash)
+            local total = 0
+            if SameHash(primarySelectedHash, ammoHash) then total = total + primaryLoaded end
+            if SameHash(secondarySelectedHash, ammoHash) then total = total + secondaryLoaded end
+            return total
+        end
+        SetPedAmmoByType(ped, primaryAmmoHash,
+            math.max(0, primaryAmmo - CreditedClipTotal(primaryAmmoHash)))
+        SetPedAmmoByType(ped, secondaryAmmoHash,
+            math.max(0, secondaryAmmo - CreditedClipTotal(secondaryAmmoHash)))
+    end
+
+    -- Select each approved type before materializing its native clip.
     SelectNativeAmmoType(ped, primary.nativeWeaponName, primary.nativeAmmoName)
     SelectNativeAmmoType(ped, secondary.nativeWeaponName, secondary.nativeAmmoName)
+    if not sharedAmmo then
+        if dualSidearms then
+            local primarySelected, primaryRecord = FeatherGuidWeapons.SelectExistingAmmo(ped,
+                primary.nativeWeaponName, primary.nativeAmmoName)
+            local secondarySelected, secondaryRecord = FeatherGuidWeapons.SelectExistingAmmo(ped,
+                secondary.nativeWeaponName, secondary.nativeAmmoName)
+            if Config.DevMode then
+                print(('[feather-weapons] pair inventory ammo entries resolved primary=%s secondary=%s')
+                    :format(tostring(primarySelected), tostring(secondarySelected)))
+            end
+            if not primarySelected or not secondarySelected then
+                return false, 'Native weapon inventory ammunition selection could not be verified.'
+            end
+            -- A different-hash pair still has one Inventory GUID per weapon.
+            -- The hash getter can keep reporting the default type even though
+            -- the GUID getter reports the selected special type, so readiness
+            -- must follow the identity that was actually mutated.
+            local typesReady = false
+            for _ = 1, 40 do
+                local primaryReady = primaryAmmo == 0 or FeatherGuidWeapons.HasSelectedAmmo(
+                    ped, primaryRecord, primary.nativeAmmoName)
+                local secondaryReady = secondaryAmmo == 0 or FeatherGuidWeapons.HasSelectedAmmo(
+                    ped, secondaryRecord, secondary.nativeAmmoName)
+                if primaryReady and secondaryReady then
+                    typesReady = true
+                    break
+                end
+                if not primaryReady then
+                    FeatherGuidWeapons.SetSelectedAmmo(ped, primaryRecord, primary.nativeAmmoName)
+                end
+                if not secondaryReady then
+                    FeatherGuidWeapons.SetSelectedAmmo(ped, secondaryRecord, secondary.nativeAmmoName)
+                end
+                Wait(50)
+            end
+            if not typesReady then
+                return false, 'Native weapon inventory ammunition types did not become ready.'
+            end
+        else
+            -- Long-gun inventory entries are not GUID-addressed by this adapter.
+            -- Continue to require the hash-based selection used by their native
+            -- restore path.
+            local function MatchesAmmo(weaponHash, nativeAmmoName)
+                local selected = tonumber(Citizen.InvokeNative(0x7FEAD38B326B9F74, ped, weaponHash))
+                return selected ~= nil and (math.floor(selected) & 0xffffffff)
+                    == (joaat(nativeAmmoName) & 0xffffffff)
+            end
+            local typesReady = false
+            for _ = 1, 40 do
+                if MatchesAmmo(primaryHash, primary.nativeAmmoName)
+                    and MatchesAmmo(secondaryHash, secondary.nativeAmmoName) then
+                    typesReady = true
+                    break
+                end
+                Wait(50)
+            end
+            if not typesReady then
+                return false, 'Native weapon pair ammunition types did not become ready.'
+            end
+        end
+
+    end
     -- Shared pools are seeded as aggregate reserve; distinct pools use the
     -- per-hand conventions documented below.
     if sharedAmmo then
         SetPedAmmoByType(ped, joaat(primary.nativeAmmoName), math.max(0,
             primaryAmmo + secondaryAmmo - primaryLoaded - secondaryLoaded))
     else
-        -- Seed both reserve pools before materializing their clips.
-        SetPedAmmoByType(ped, joaat(primary.nativeAmmoName), primaryReserve)
-        SetPedAmmoByType(ped, joaat(secondary.nativeAmmoName), secondaryReserve)
+        -- Distinct pools were normalized immediately after selection, before
+        -- either clip was materialized.
     end
 
     local primaryReady, secondaryReady = false, false
-    for _ = 1, 40 do
-        SetAmmoInClip(ped, primaryHash, primaryLoaded)
-        SetAmmoInClip(ped, secondaryHash, secondaryLoaded)
+    local function LogClipWrite(stage, result)
+        if not Config.DevMode or sharedAmmo then return end
+        for role, value in pairs({ primary = primary, secondary = secondary }) do
+            local weaponHash = joaat(value.nativeWeaponName)
+            local selectedAmmo = Citizen.InvokeNative(0x7FEAD38B326B9F74, ped, weaponHash)
+            local clipOk, clip = GetAmmoInClip(ped, weaponHash)
+            print(('[feather-weapons] pair clip write stage=%s result=%s role=%s item=%s expectedAmmoHash=%s selectedAmmoHash=%s pool=%s clipOk=%s clip=%s')
+                :format(stage, tostring(result), role, tostring(value.itemInstanceId),
+                    tostring(joaat(value.nativeAmmoName)), tostring(selectedAmmo),
+                    tostring(GetPedAmmoByType(ped, joaat(value.nativeAmmoName))),
+                    tostring(NativeTrue(clipOk)), tostring(clip)))
+        end
+    end
+    for attempt = 1, 40 do
+        if attempt == 1 then LogClipWrite('before-primary') end
+        local primaryWritten = SetAmmoInClip(ped, primaryHash, primaryLoaded)
+        if attempt == 1 then LogClipWrite('after-primary', primaryWritten) end
+        local secondaryWritten = SetAmmoInClip(ped, secondaryHash, secondaryLoaded)
+        if attempt == 1 then LogClipWrite('after-secondary', secondaryWritten) end
         local primaryOk, observedPrimaryLoaded = GetAmmoInClip(ped, primaryHash)
         local secondaryOk, observedSecondaryLoaded = GetAmmoInClip(ped, secondaryHash)
-        primaryReady = NativeTrue(primaryOk)
-            and math.max(0, math.floor(tonumber(observedPrimaryLoaded) or 0)) == primaryLoaded
-        secondaryReady = NativeTrue(secondaryOk)
-            and math.max(0, math.floor(tonumber(observedSecondaryLoaded) or 0)) == secondaryLoaded
+        primaryReady = (primaryAmmo == 0 and primaryLoaded == 0)
+            or (NativeTrue(primaryOk)
+                and math.max(0, math.floor(tonumber(observedPrimaryLoaded) or 0)) == primaryLoaded)
+        secondaryReady = (secondaryAmmo == 0 and secondaryLoaded == 0)
+            or (NativeTrue(secondaryOk)
+                and math.max(0, math.floor(tonumber(observedSecondaryLoaded) or 0)) == secondaryLoaded)
         if primaryReady and secondaryReady then break end
+        -- A cold restore or a rebuild after single-hand fallback can leave one
+        -- weapon present in Inventory but without a hash-addressable clip.
+        -- Selecting that weapon at its persisted attach point materializes the
+        -- missing clip surface; the next bounded retry performs the write.
+        if dualSidearms then
+            if not primaryReady then
+                SetCurrentPedWeapon(ped, primaryHash, true, primaryPoint, false, false)
+            end
+            if not secondaryReady then
+                SetCurrentPedWeapon(ped, secondaryHash, true, offhandPoint, false, false)
+            end
+        end
         Wait(50)
     end
 
@@ -448,12 +603,62 @@ local function RestoreApprovedNativePair(primary, secondary)
     end
 
     if not sharedAmmo then
-        -- Before the offhand clip exists, RedM may leave that pool at the raw
-        -- reserve value. Reapplying reserve after activation makes the native
-        -- total include the offhand clip exactly once without mutating the
-        -- selected primary weapon.
+        -- Both pools were pre-seeded for RedM's observed clip-credit behavior.
         Wait(0)
-        SetPedAmmoByType(ped, joaat(secondary.nativeAmmoName), secondaryReserve)
+        local primaryAmmoHash = joaat(primary.nativeAmmoName)
+        local secondaryAmmoHash = joaat(secondary.nativeAmmoName)
+        local function LogDistinctPools(stage)
+            if not Config.DevMode then return end
+            local function LogWeapon(role, state, weaponHash, ammoHash, approvedTotal, approvedLoaded)
+                local clipOk, clip = GetAmmoInClip(ped, weaponHash)
+                local pool = tonumber(GetPedAmmoByType(ped, ammoHash))
+                -- Preserve unavailable reads rather than reporting a false zero.
+                -- Native pool semantics are under validation; delta is diagnostic
+                -- only and must never be used to grant or persist ammunition.
+                print(('[feather-weapons] distinct pair pools stage=%s role=%s dualSidearms=%s item=%s generation=%s weapon=%s ammo=%s approvedTotal=%d approvedLoaded=%d pool=%s clipOk=%s clip=%s delta=%s')
+                    :format(stage, role, tostring(dualSidearms), tostring(state.itemInstanceId),
+                        tostring(state.generation), state.nativeWeaponName, state.nativeAmmoName,
+                        approvedTotal, approvedLoaded, tostring(pool), tostring(NativeTrue(clipOk)),
+                        tostring(clip), pool and tostring(pool - approvedTotal) or 'unavailable'))
+            end
+            LogWeapon('primary', primary, primaryHash, primaryAmmoHash, primaryAmmo, primaryLoaded)
+            LogWeapon('secondary', secondary, secondaryHash, secondaryAmmoHash, secondaryAmmo, secondaryLoaded)
+        end
+        LogDistinctPools('materialized')
+        -- Some weapon models materialize a readable clip without crediting it
+        -- to the native ammo-type pool (observed with Mauser). Raise only a
+        -- measured deficit; this is wheel presentation bounded by approved
+        -- escrow and cannot create persistent ownership.
+        for _, value in ipairs({
+            { ammoHash = primaryAmmoHash, approved = primaryAmmo },
+            { ammoHash = secondaryAmmoHash, approved = secondaryAmmo }
+        }) do
+            local observed = math.max(0, math.floor(tonumber(
+                GetPedAmmoByType(ped, value.ammoHash)) or 0))
+            local deficit = math.max(0, value.approved - observed)
+            if deficit > 0 then
+                Citizen.InvokeNative(0x106A811C6D3035F3, ped, value.ammoHash,
+                    deficit, joaat('ADD_REASON_DEFAULT')) -- GiveAmmoToPedByType
+            end
+        end
+        Wait(0)
+        local function PoolMatchesApproved(ammoHash, approved)
+            local observed = math.max(0, math.floor(tonumber(
+                GetPedAmmoByType(ped, ammoHash)) or 0))
+            -- An empty counterpart can still display the funded weapon's clip
+            -- in its default pool. It owns no rounds and fallback removes it,
+            -- so exact wheel equality applies only to funded pools.
+            return approved == 0 or observed == approved
+        end
+        if not PoolMatchesApproved(primaryAmmoHash, primaryAmmo)
+            or not PoolMatchesApproved(secondaryAmmoHash, secondaryAmmo) then
+            return false, 'Native ammunition pools did not match the approved pair totals.'
+        end
+        LogDistinctPools('offhand-normalized')
+        LogDistinctPools('primary-normalized')
+        Wait(0)
+        LogDistinctPools('wheel-normalized')
+        LogDistinctPools('settled')
     end
 
     return true
@@ -796,7 +1001,16 @@ local function ApplyApprovedPair(primary, secondary)
         return true
     end
 
+    local restoringFromSingleFallback = pairSingleFallback ~= nil
     ClearNativeWeapon()
+    if restoringFromSingleFallback then
+        -- Removing a depleted hand promotes its survivor into RedM's primary
+        -- attachment. Rebuilding the pair in that same native frame can leave
+        -- the survivor bound to its promoted slot, so the requested offhand
+        -- clip never materializes. Give removal one bounded transition before
+        -- recreating the persisted primary/offhand layout.
+        Wait(100)
+    end
     equipped, offhand = ApprovedState(primary), ApprovedState(secondary)
     local restored, message = RestoreApprovedNativePair(equipped, offhand)
     if not restored then
@@ -1313,7 +1527,18 @@ function FeatherWeaponsClient.Reconcile(callback, options)
         local slots = type(result.value.slots) == 'table' and result.value.slots or {}
         if slots.primary and slots.offhand then
             local applied, message = ApplyApprovedPair(slots.primary, slots.offhand)
-            if not applied then Notify(message or 'Unable to restore the weapon pair.') end
+            if not applied then
+                local failure = {
+                    ok = false,
+                    error = {
+                        code = 'native_pair_restore_failed',
+                        message = message or 'Unable to restore the weapon pair.'
+                    }
+                }
+                Notify(failure.error.message)
+                if callback then callback(failure) end
+                return
+            end
         elseif slots.primary then
             ApplyApprovedWeapon(slots.primary)
         elseif slots.shoulder or slots.back then
@@ -1692,6 +1917,22 @@ RegisterNetEvent('feather-weapons:client:useInventoryWeapon', function(itemInsta
         if not result or not result.ok then
             inventoryWeaponInFlight = false
             return
+        end
+        -- A failed native restore clears local state, but server equipment
+        -- remains authoritative. Recover the toggle using the returned slot
+        -- rather than treating an already-equipped item as a new equip request.
+        if not equipped and not offhand and not extraSlots.shoulder and not extraSlots.back then
+            for slot, approved in pairs(result.value and result.value.slots or {}) do
+                if SameInstance(approved.itemInstanceId, itemInstanceId) then
+                    FeatherWeaponsClient.Unequip(function(removed, error)
+                        inventoryWeaponInFlight = false
+                        local failure = removed and removed.error or error
+                        Notify(removed and removed.ok and 'Weapon unequipped.'
+                            or (failure and failure.message or 'Unable to unequip this weapon.'))
+                    end, slot)
+                    return
+                end
+            end
         end
         UseInventoryWeaponFromAuthoritativeState(itemInstanceId)
     end)
@@ -2314,7 +2555,7 @@ end
 OpenAmmunitionMenu = function(initialSlot)
     FeatherWeaponsClient.Checkpoint(function(result)
         if not result or not result.ok then
-            local failure = result and result.error or nil
+            local failure = result and (result.error or result) or nil
             Notify(failure and failure.message
                 or 'Unable to save weapon ammunition before opening the menu.')
             StopAmmunitionActivity()

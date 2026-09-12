@@ -53,6 +53,62 @@ local function RemoveRecord(record)
     ))
 end
 
+-- Address an existing different-hash weapon without creating or moving native
+-- inventory entries. Production rejects matching models before this is called.
+function FeatherGuidWeapons.ResolveExisting(weaponName)
+    local parent = CarriedWeaponsGuid()
+    if not parent then return nil end
+    local selectedGuid, selectedSlot
+    for slot = 0, 1 do
+        local guid = FeatherGuidWeapons.ResolveGuid(INVENTORY_ID, parent,
+            joaat(weaponName), joaat(('SLOTID_WEAPON_%d'):format(slot)))
+        if guid then
+            if selectedGuid then return nil end
+            selectedGuid = guid
+            selectedSlot = slot
+        end
+    end
+    if not selectedGuid then return nil end
+    return {
+        inventoryId = INVENTORY_ID,
+        guid = selectedGuid,
+        slot = selectedSlot,
+        weaponName = weaponName
+    }
+end
+
+function FeatherGuidWeapons.SelectExistingAmmo(ped, weaponName, ammoName)
+    local record = FeatherGuidWeapons.ResolveExisting(weaponName)
+    if not record then return false end
+    local expectedAmmoHash = joaat(ammoName)
+    Citizen.InvokeNative(0xEBE46B501BC3FBCF, ped, record.guid, expectedAmmoHash)
+    -- Do not activate a different-hash production weapon by GUID here. Live
+    -- validation showed that doing so can remove both pair members from the
+    -- hash-addressable clip surface. GiveWeaponToPed already established their
+    -- attach points; this call changes only the selected ammunition entry.
+    local actual = tonumber(Citizen.InvokeNative(0xAF9D167A5656D6A6, ped, record.guid))
+    if Config.DevMode then
+        print(('[feather-weapons] inventory ammo readback weapon=%s expected=%s guidActual=%s hashActual=%s')
+            :format(weaponName, tostring(expectedAmmoHash), tostring(actual),
+                tostring(Citizen.InvokeNative(0x7FEAD38B326B9F74, ped, joaat(weaponName)))))
+    end
+    record.ammoHash = expectedAmmoHash
+    return true, record
+end
+
+function FeatherGuidWeapons.HasSelectedAmmo(ped, record, ammoName)
+    if not record or not record.guid or type(ammoName) ~= 'string' then return false end
+    local actual = tonumber(Citizen.InvokeNative(0xAF9D167A5656D6A6, ped, record.guid))
+    return actual ~= nil and (math.floor(actual) & 0xffffffff)
+        == (joaat(ammoName) & 0xffffffff)
+end
+
+function FeatherGuidWeapons.SetSelectedAmmo(ped, record, ammoName)
+    if not record or not record.guid or type(ammoName) ~= 'string' then return false end
+    Citizen.InvokeNative(0xEBE46B501BC3FBCF, ped, record.guid, joaat(ammoName))
+    return true
+end
+
 local function InsertWeapon(ped, parentGuid, weaponName)
     local guid = Buffer(8 * 13)
     local added = Citizen.InvokeNative(0xCB5D11F9508A928D, -- InventoryAddItemWithGuid

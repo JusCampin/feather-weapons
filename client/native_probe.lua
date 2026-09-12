@@ -30,6 +30,9 @@ local dualWeaponCopies = nil
 local holsterProbeWeaponHash = nil
 local holsterProbeWeaponName = nil
 local holsterProbeAttachPoint = nil
+local specialProbeAmmoHash = nil
+local specialProbePending = false
+local specialProbeRead = nil
 
 local function NativeTrue(value)
     return value == true or value == 1
@@ -276,6 +279,16 @@ local function RestoreDualWieldState()
 end
 
 local function ClearNativeTestState(ped)
+    if specialProbeAmmoHash then
+        local amount = math.max(0, tonumber(GetPedAmmoByType(ped, specialProbeAmmoHash)) or 0)
+        if amount > 0 then
+            Citizen.InvokeNative(0xB6CFEC32E3742779, ped, specialProbeAmmoHash, amount, 0xA07362E6)
+        end
+        print(('[WeaponNativeProbe] special cleanup requested=%s remaining=%s')
+            :format(tostring(amount), tostring(GetPedAmmoByType(ped, specialProbeAmmoHash))))
+        specialProbeAmmoHash = nil
+        specialProbeRead = nil
+    end
     -- SetPedAmmoByType(..., 0) did not lower an existing pool on the tested
     -- runtime. Remove the observed amount while its weapon is still present;
     -- removing the weapon first left the prior ceiling behind.
@@ -362,6 +375,55 @@ RegisterCommand('WeaponNativeProbePrepare', function(_, args)
         and previous.loaded == loaded and previous.weaponTotal == total
         and previous.ammoTypeTotal == total
     print(('[WeaponNativeProbe] setup %s'):format(setupPassed and 'PASS' or 'FAIL'))
+end, false)
+
+-- Baseline experiment: one model, one special type, no production adapter,
+-- normalization loop, GUID activation, or Inventory ammunition mutation.
+RegisterCommand('WeaponNativeProbeSpecial', function()
+    if RefuseInventoryWeapon() or specialProbePending then return end
+    if weaponName ~= 'WEAPON_REVOLVER_CATTLEMAN' or ammoName ~= 'AMMO_REVOLVER' then
+        print('[WeaponNativeProbe] REFUSED -- baseline requires Cattleman and regular probe defaults')
+        return
+    end
+    specialProbePending = true
+    -- Local state can be empty after a failed restore while server leases remain.
+    FeatherCore.RPC.Call('feather-weapons:state:get', {}, function(result)
+        specialProbePending = false
+        if not result or not result.ok or type(result.value) ~= 'table'
+            or type(result.value.slots) ~= 'table' then
+            print('[WeaponNativeProbe] REFUSED -- server weapon state unavailable')
+            return
+        end
+        if next(result.value.slots) ~= nil or RefuseInventoryWeapon() then
+            print('[WeaponNativeProbe] REFUSED -- unequip all Inventory weapon slots first')
+            return
+        end
+        local ped = PlayerPedId()
+        ClearNativeTestState(ped)
+        watching, dualWatching = false, false
+        specialProbeAmmoHash = joaat('AMMO_REVOLVER_HIGH_VELOCITY')
+        active = true
+        local function Read(stage)
+            local ok, clip = GetAmmoInClip(ped, weaponHash)
+            print(('[WeaponNativeProbe] special stage=%s expected=%s selected=%s regular=%s highVelocity=%s clipOk=%s clip=%s')
+                :format(stage, tostring(specialProbeAmmoHash),
+                    tostring(Citizen.InvokeNative(0x7FEAD38B326B9F74, ped, weaponHash)),
+                    tostring(GetPedAmmoByType(ped, ammoHash)),
+                    tostring(GetPedAmmoByType(ped, specialProbeAmmoHash)),
+                    tostring(NativeTrue(ok)), tostring(clip)))
+        end
+        specialProbeRead = Read
+        GiveProbeWeapon(ped, weaponHash, 0, false, false, true)
+        Read('created')
+        SetPedAmmoByType(ped, specialProbeAmmoHash, 12)
+        Read('seeded')
+        Citizen.InvokeNative(0x23FB9FACA28779C1, ped, weaponHash, specialProbeAmmoHash)
+        Citizen.InvokeNative(0xCC9C4393523833E2, ped, weaponHash, specialProbeAmmoHash)
+        Read('type-requested')
+        SetCurrentPedWeapon(ped, weaponHash, true, 0, false, false)
+        Read('activated')
+        print('[WeaponNativeProbe] special native-reload baseline ready; no clip write; draw/reload normally then run WeaponNativeProbeStatus')
+    end)
 end, false)
 
 RegisterCommand('WeaponNativeProbeDualPrepare', function(_, args)
@@ -563,6 +625,10 @@ RegisterCommand('WeaponNativeProbeDualStatus', function()
 end, false)
 
 RegisterCommand('WeaponNativeProbeStatus', function(_, args)
+    if specialProbeRead then
+        specialProbeRead('status')
+        return
+    end
     PrintSnapshot(args and args[1] or 'status', Snapshot())
 end, false)
 
