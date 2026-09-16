@@ -98,8 +98,24 @@ Config = {
         },
         authorization = {
             enabled = false,
-            destroyAction = "weapons.ownership.destroy"
+            destroyAction = "weapons.ownership.destroy",
+            holdAction = "weapons.evidence.hold",
+            releaseAction = "weapons.evidence.release"
         }
+    },
+    Provenance = {
+        -- Zero retains audit events indefinitely. Any future purge workflow
+        -- must be an explicit server-owner operation, never an automatic side effect.
+        retentionDays = 0,
+        maxInspectionEvents = 100
+    },
+    Issuance = {
+        trustedResources = { ["feather-weapons"] = true, ["feather-admin"] = true },
+        allowedPurposes = {
+            development_grant = true, admin_issue = true, purchase = true,
+            crafting = true, job_issue = true, recovery = true
+        },
+        authorization = { enabled = false, action = "weapons.issuance.issue" }
     },
     Controls = {
         unload = {

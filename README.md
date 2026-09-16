@@ -101,6 +101,29 @@ The installation SQL adds the ammunition catalog, gun oil, and the Cattleman Lon
 > [!NOTE]
 > Weapon instances are created through the inventory transaction service with unique serials and complete metadata. When `DevMode = true`, authorized staff can issue the configured Cattleman with `/grantweapon revolver_cattleman` in chat, or `grantweapon revolver_cattleman [targetServerId]` from the server console.
 
+Cross-resource issuance is restricted to `Config.Issuance.trustedResources` and
+an explicit purpose (`purchase`, `crafting`, `job_issue`, `admin_issue`, or
+`recovery`; development grants remain development-only). Optional Core action
+`weapons.issuance.issue` can apply future license, job, or shop policy. Callers
+cannot authenticate themselves by supplying a resource name.
+
+All non-development issuance requests must also provide a stable `requestId`.
+Weapons stores the trusted resource plus request ID in a durable registry. A
+committed retry returns the original item and serial with `replayed = true`;
+concurrent retries fail closed while the first request is pending. Callers must
+reuse the same request ID after timeouts rather than generating a new one.
+Each key is permanently bound to its original target character, weapon
+definition, and purpose; reusing it with a different payload fails closed.
+Request IDs must be 1-128 characters, start with a letter or number, and use
+only letters, numbers, dots, underscores, colons, or hyphens. Invalid IDs are
+rejected instead of truncated.
+
+If a request is interrupted after Inventory creates the weapon but before its
+issuance reservation commits, retrying the same request reconciles the pending
+record against the target character's canonical weapon metadata. Recovery only
+commits when exactly one matching item exists; missing or ambiguous outcomes
+remain fail-closed for operator review.
+
 ## Configuration
 
 ```lua
@@ -342,6 +365,27 @@ The ammunition and modification menus display each equipped firearm's persisted
 serial number. The same serial is included in `weaponstate` diagnostics for
 primary, offhand, shoulder, and back slots.
 Development grants and native probes remain disabled.
+
+Issuance, cross-inventory ownership transitions, and destruction are also
+written to the append-only `feather_weapon_events` ledger. Trusted resources
+may call `InspectWeaponHistory` with an `itemInstanceId` or `serialNumber` and
+an optional bounded `limit` (maximum 100) to retrieve the current item, terminal
+state, and newest-first audit history. Run `WeaponProvenanceContractSmokeTest`
+from the server console to verify the read-only contract.
+
+History is private to resources explicitly listed in
+`Config.Ownership.trustedResources`. `Config.Provenance.maxInspectionEvents`
+bounds each query. `retentionDays = 0` is the safe default and retains the
+append-only audit indefinitely; Weapons does not silently purge ownership
+history.
+
+Trusted resources may place or release an exact unequipped character-owned
+weapon under evidence hold through `HoldWeaponEvidence` and
+`ReleaseWeaponEvidence`. Both require the canonical character UUID, item
+instance ID, and expected serial. Held weapons fail closed for equip, ordinary
+movement, and ordinary destruction; the canonical item is mutated in place and
+each state change is appended to the provenance ledger. Optional Core actions
+are configured as `weapons.evidence.hold` and `weapons.evidence.release`.
 
 ## Known limitations
 

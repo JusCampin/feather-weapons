@@ -16,6 +16,12 @@ if not definitionResult.ok then
     return
 end
 
+local provenanceResult = WeaponProvenanceService.Start()
+if not provenanceResult.ok then
+    FailStartup(provenanceResult.error.message, provenanceResult.error.details)
+    return
+end
+
 local offhandConfigResult = EquipService.ValidateConfiguration()
 if not offhandConfigResult.ok then
     FailStartup(offhandConfigResult.error.message, offhandConfigResult.error.details)

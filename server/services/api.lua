@@ -41,10 +41,17 @@ function WeaponAPI.GetCapabilities()
             repair = InventoryAdapter.IsReady(),
             slotRepair = InventoryAdapter.IsReady(),
             issuance = InventoryAdapter.IsReady(),
+            secureIssuance = InventoryAdapter.IsReady(),
+            idempotentIssuance = InventoryAdapter.IsReady(),
+            issuancePayloadBinding = InventoryAdapter.IsReady(),
+            issuanceRecovery = InventoryAdapter.IsReady() and WeaponProvenanceService.IsReady(),
             attachmentDefinitions = true,
             attachmentTransactions = InventoryAdapter.IsReady(),
             slotAttachments = InventoryAdapter.IsReady(),
             ownershipTransitionEvents = InventoryAdapter.IsReady(),
+            durableProvenance = WeaponProvenanceService.IsReady(),
+            serialInspection = WeaponProvenanceService.IsReady(),
+            evidenceHolds = InventoryAdapter.IsReady(),
             administrativeHoldGuards = InventoryAdapter.IsReady(),
             destruction = InventoryAdapter.IsReady()
         }
@@ -75,14 +82,26 @@ function WeaponAPI.ReconcileEquippedWeapons(source)
     return ReconciliationService.Force(tonumber(source))
 end
 
-function WeaponAPI.IssueWeapon(request, context)
+function WeaponAPI.IssueWeapon(request, context, invokingResource)
     context = type(context) == "table" and context or {}
-    context.resource = context.resource or GetInvokingResource() or "feather-weapons"
-    return IssuanceService.Issue(context, request)
+    context.resource = invokingResource or GetInvokingResource()
+    return IssuanceService.Issue(context, request, context.resource)
 end
 
 function WeaponAPI.DestroyWeapon(request, context, invokingResource)
     return WeaponOwnershipService.Destroy(context, request, invokingResource)
+end
+
+function WeaponAPI.InspectWeaponHistory(request, context, invokingResource)
+    return WeaponProvenanceService.Inspect(request, context, invokingResource)
+end
+
+function WeaponAPI.HoldEvidence(request, context, resource)
+    return WeaponEvidenceService.Hold(context, request, resource)
+end
+
+function WeaponAPI.ReleaseEvidence(request, context, resource)
+    return WeaponEvidenceService.Release(context, request, resource)
 end
 
 exports("initiate", function()
@@ -93,13 +112,24 @@ exports("initiate", function()
         Runtime = { Get = WeaponAPI.GetRuntime },
         Inspection = {
             Inspect = WeaponAPI.InspectEquippedWeapons,
-            Reconcile = WeaponAPI.ReconcileEquippedWeapons
+            Reconcile = WeaponAPI.ReconcileEquippedWeapons,
+            History = function(request, context)
+                return WeaponAPI.InspectWeaponHistory(request, context, GetInvokingResource())
+            end
         },
-        Issuance = { Issue = WeaponAPI.IssueWeapon },
+        Issuance = { Issue = function(request, context)
+            return WeaponAPI.IssueWeapon(request, context, GetInvokingResource())
+        end },
         Ownership = {
             Destroy = function(request, context)
                 local invokingResource = GetInvokingResource()
                 return WeaponAPI.DestroyWeapon(request, context, invokingResource)
+            end,
+            HoldEvidence = function(request, context)
+                return WeaponAPI.HoldEvidence(request, context, GetInvokingResource())
+            end,
+            ReleaseEvidence = function(request, context)
+                return WeaponAPI.ReleaseEvidence(request, context, GetInvokingResource())
             end
         },
         Inventory = {
@@ -113,12 +143,24 @@ end)
 -- named export instead of relying on nested functions surviving Cfx's API
 -- table boundary.
 exports("IssueWeapon", function(request, context)
-    return WeaponAPI.IssueWeapon(request, context)
+    return WeaponAPI.IssueWeapon(request, context, GetInvokingResource())
 end)
 
 exports("DestroyWeapon", function(request, context)
     local invokingResource = GetInvokingResource()
     return WeaponAPI.DestroyWeapon(request, context, invokingResource)
+end)
+
+exports("InspectWeaponHistory", function(request, context)
+    return WeaponAPI.InspectWeaponHistory(request, context, GetInvokingResource())
+end)
+
+exports("HoldWeaponEvidence", function(request, context)
+    return WeaponAPI.HoldEvidence(request, context, GetInvokingResource())
+end)
+
+exports("ReleaseWeaponEvidence", function(request, context)
+    return WeaponAPI.ReleaseEvidence(request, context, GetInvokingResource())
 end)
 
 exports("InspectEquippedWeapons", function(source)

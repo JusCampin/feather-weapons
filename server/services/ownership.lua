@@ -63,6 +63,15 @@ local function ClassifyTransition(payload, actorInventoryId)
 end
 
 local function RecordCommittedFact(fact)
+    local persisted = WeaponProvenanceService.Record(fact)
+    if not persisted.ok then
+        diagnostics.failed = diagnostics.failed + 1
+        print(("[feather-weapons] CRITICAL provenance persistence failed item=%s type=%s message=%s"):format(
+            tostring(fact.itemInstanceId), tostring(fact.transitionType),
+            tostring(persisted.error and persisted.error.message)))
+    else
+        fact.eventId = persisted.value.eventId
+    end
     TriggerEvent("Feather:Weapons:OwnershipTransitionCommitted", fact)
     diagnostics.observed = diagnostics.observed + 1
     diagnostics.byType[fact.transitionType] = (diagnostics.byType[fact.transitionType] or 0) + 1

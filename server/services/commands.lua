@@ -629,8 +629,9 @@ if Config.DevMode then
         }, {
             characterId = targetSession.value.characterId,
             definitionId = definitionId,
+            purpose = "development_grant",
             provenance = { type = "development_grant" }
-        })
+        }, "feather-weapons")
 
         if not result.ok then
             local message = ("Weapon grant failed: %s"):format(result.error.message)
@@ -680,6 +681,223 @@ RegisterCommand("WeaponMetadataInspect", function(source, args)
             tostring(item and item.runtimeMatches or false)))
     end
 end, true)
+
+RegisterCommand("WeaponProvenanceContractSmokeTest", function(source)
+        if source ~= 0 then return end
+        local contract = WeaponProvenanceService.CheckContract()
+        local capabilities = WeaponAPI.GetCapabilities()
+        local tests = {
+            { name = "ledger ready", passed = contract.ready == true },
+            { name = "trusted caller configured", passed = contract.trustedResourceConfigured == true },
+            { name = "untrusted inspection rejected", passed = contract.untrustedRejected == true },
+            { name = "incomplete inspection rejected", passed = contract.incompleteRejected == true },
+            { name = "provenance capability ready", passed = capabilities.features.durableProvenance == true },
+            { name = "serial inspection ready", passed = capabilities.features.serialInspection == true },
+            { name = "inspection bounded", passed = contract.boundedInspection == true },
+            { name = "retention configured", passed = contract.retentionConfigured == true }
+        }
+        local passed = 0
+        for _, test in ipairs(tests) do
+            if test.passed then passed = passed + 1 end
+            print(("[WeaponProvenanceContractSmokeTest] %-31s %s"):format(
+                test.name, test.passed and "PASS" or "FAIL"))
+        end
+        print(("[WeaponProvenanceContractSmokeTest] done %d/%d passed (read-only)")
+            :format(passed, #tests))
+    end, true)
+
+RegisterCommand("WeaponIssuanceContractSmokeTest", function(source)
+        if source ~= 0 then return end
+        local contract, capabilities = IssuanceService.CheckContract(), WeaponAPI.GetCapabilities()
+        local tests = {
+            { 'service available', contract.serviceAvailable },
+            { 'trusted caller configured', contract.trustedCallerConfigured },
+            { 'issuance purpose configured', contract.purposeConfigured },
+            { 'authorization configured', contract.authorizationConfigured },
+            { 'untrusted caller rejected', contract.untrustedRejected },
+            { 'incomplete request rejected', contract.incompleteRejected },
+            { 'secure issuance ready', capabilities.features.secureIssuance == true },
+            { 'stable request id required', contract.requestIdRequired },
+            { 'oversized request id rejected', contract.oversizedRequestIdRejected },
+            { 'malformed request id rejected', contract.malformedRequestIdRejected },
+            { 'idempotent issuance ready', capabilities.features.idempotentIssuance == true },
+            { 'issuance payload binding ready', capabilities.features.issuancePayloadBinding == true },
+            { 'interrupted issuance recovery ready', capabilities.features.issuanceRecovery == true }
+        }
+        local passed = 0
+        for _, test in ipairs(tests) do
+            if test[2] then passed = passed + 1 end
+            print(("[WeaponIssuanceContractSmokeTest] %-29s %s"):format(
+                test[1], test[2] and 'PASS' or 'FAIL'))
+        end
+        print(("[WeaponIssuanceContractSmokeTest] done %d/%d passed (read-only)"):format(passed, #tests))
+    end, true)
+
+if Config.DevMode then
+    RegisterCommand("WeaponIssuanceIdempotencyTest", function(source, args)
+        if source ~= 0 then return end
+        local targetSource = tonumber(args and args[1])
+        local definitionId = args and args[2] or 'revolver_cattleman'
+        local requestId = args and args[3]
+        if not targetSource or type(requestId) ~= 'string' or requestId == '' then
+            print('[WeaponIssuanceIdempotencyTest] usage: WeaponIssuanceIdempotencyTest <source> <definitionId> <requestId>')
+            return
+        end
+        local session = CoreAdapter.ResolveSession(targetSource)
+        if not session.ok then print('[WeaponIssuanceIdempotencyTest] FAIL session unavailable'); return end
+        local request = { characterId = session.value.characterId, definitionId = definitionId,
+            purpose = 'admin_issue', requestId = requestId,
+            provenance = { type = 'admin_issue', reference = requestId } }
+        local function Issue(suffix)
+            return IssuanceService.Issue({ characterId = session.value.characterId,
+                correlationId = ('idempotency-test:%s:%s'):format(requestId, suffix),
+                reason = 'admin_issue', resource = 'feather-weapons' }, request, 'feather-weapons')
+        end
+        local first, second = Issue('first'), Issue('retry')
+        local otherDefinition = definitionId == 'revolver_schofield'
+            and 'revolver_cattleman' or 'revolver_schofield'
+        local mismatchRequest = { characterId = session.value.characterId, definitionId = otherDefinition,
+            purpose = 'admin_issue', requestId = requestId,
+            provenance = { type = 'admin_issue', reference = requestId } }
+        local mismatch = IssuanceService.Issue({ characterId = session.value.characterId,
+            correlationId = ('idempotency-test:%s:mismatch'):format(requestId),
+            reason = 'admin_issue', resource = 'feather-weapons' }, mismatchRequest, 'feather-weapons')
+        local mismatchRejected = not mismatch.ok and mismatch.error
+            and mismatch.error.code == WeaponErrors.OPERATION_CONFLICT
+        local passed = first.ok and second.ok
+            and tonumber(first.value.itemInstanceId) == tonumber(second.value.itemInstanceId)
+            and first.value.serialNumber == second.value.serialNumber and second.value.replayed == true
+            and mismatchRejected
+        print(('[WeaponIssuanceIdempotencyTest] %s item=%s serial=%s replayed=%s mismatchRejected=%s'):format(
+            passed and 'PASS' or 'FAIL', tostring(first.ok and first.value.itemInstanceId),
+            tostring(first.ok and first.value.serialNumber), tostring(second.ok and second.value.replayed),
+            tostring(mismatchRejected)))
+    end, true)
+
+    RegisterCommand("WeaponIssuanceRecoveryTest", function(source, args)
+        if source ~= 0 then return end
+        local targetSource = tonumber(args and args[1])
+        local definitionId = args and args[2] or 'revolver_cattleman'
+        local requestId = args and args[3]
+        local phase = args and args[4] or 'combined'
+        if not targetSource or type(requestId) ~= 'string' or requestId == '' then
+            print('[WeaponIssuanceRecoveryTest] usage: WeaponIssuanceRecoveryTest <source> <definitionId> <requestId> [prepare|retry]')
+            return
+        end
+        local session = CoreAdapter.ResolveSession(targetSource)
+        if not session.ok then print('[WeaponIssuanceRecoveryTest] FAIL session unavailable'); return end
+        local request = { characterId = session.value.characterId, definitionId = definitionId,
+            purpose = 'admin_issue', requestId = requestId,
+            provenance = { type = 'admin_issue', reference = requestId } }
+        local base = { characterId = session.value.characterId, reason = 'admin_issue',
+            resource = 'feather-weapons' }
+        local interruptedContext = {
+            characterId = base.characterId, reason = base.reason, resource = base.resource,
+            correlationId = ('issuance-recovery:%s:interrupted'):format(requestId),
+            failureInjection = 'after_create'
+        }
+        local interrupted
+        if phase ~= 'retry' then
+            interrupted = IssuanceService.Issue(
+                interruptedContext, request, 'feather-weapons')
+        end
+        local interruptedAsExpected = interrupted and not interrupted.ok and interrupted.error
+            and interrupted.error.code == WeaponErrors.OPERATION_CONFLICT
+            and tonumber(interrupted.error.details and interrupted.error.details.itemInstanceId) ~= nil
+        if phase == 'prepare' then
+            print(('[WeaponIssuanceRecoveryTest] %s prepared item=%s serial=%s; restart feather-weapons then rerun with retry'):format(
+                interruptedAsExpected and 'PASS' or 'FAIL',
+                tostring(interruptedAsExpected and interrupted.error.details.itemInstanceId),
+                tostring(interruptedAsExpected and interrupted.error.details.serialNumber)))
+            return
+        end
+        local recovered = IssuanceService.Issue({
+            characterId = base.characterId, reason = base.reason, resource = base.resource,
+            correlationId = ('issuance-recovery:%s:retry'):format(requestId)
+        }, request, 'feather-weapons')
+        local expectedItemId = interruptedAsExpected
+            and tonumber(interrupted.error.details.itemInstanceId) or nil
+        local passed = (phase == 'retry' or interruptedAsExpected) and recovered.ok
+            and recovered.value.replayed == true and recovered.value.recovered == true
+            and (not expectedItemId or tonumber(recovered.value.itemInstanceId) == expectedItemId)
+        print(('[WeaponIssuanceRecoveryTest] %s item=%s serial=%s interrupted=%s replayed=%s recovered=%s'):format(
+            passed and 'PASS' or 'FAIL',
+            tostring(recovered.ok and recovered.value.itemInstanceId),
+            tostring(recovered.ok and recovered.value.serialNumber),
+            tostring(interruptedAsExpected == true),
+            tostring(recovered.ok and recovered.value.replayed),
+            tostring(recovered.ok and recovered.value.recovered)))
+    end, true)
+end
+
+RegisterCommand("WeaponProvenanceInspect", function(source, args)
+        if source ~= 0 then return end
+        local key = args and args[1]
+        local request = { limit = tonumber(args and args[2]) or 10 }
+        if tonumber(key) then request.itemInstanceId = tonumber(key) else request.serialNumber = key end
+        local result = WeaponProvenanceService.Inspect(request,
+            { correlationId = "provenance-inspect:" .. tostring(os.time()) }, "feather-weapons")
+        if not result.ok then
+            print(("[WeaponProvenanceInspect] FAIL code=%s message=%s"):format(
+                tostring(result.error and result.error.code), tostring(result.error and result.error.message)))
+            return
+        end
+        local value = result.value
+        print(("[WeaponProvenanceInspect] item=%s serial=%s current=%s destroyed=%s events=%d"):format(
+            tostring(value.itemInstanceId), tostring(value.serialNumber), tostring(value.current ~= nil),
+            tostring(value.destroyed), #(value.events or {})))
+        for _, event in ipairs(value.events or {}) do
+            print(("[WeaponProvenanceInspect] event=%s type=%s operation=%s from=%s/%s to=%s/%s reason=%s at=%s"):format(
+                tostring(event.id), tostring(event.event_type), tostring(event.operation),
+                tostring(event.from_inventory_id), tostring(event.from_character_id),
+                tostring(event.to_inventory_id), tostring(event.to_character_id),
+                tostring(event.reason), tostring(event.occurred_at)))
+        end
+    end, true)
+
+RegisterCommand("WeaponEvidenceTest", function(source, args)
+        if source ~= 0 or Config.DevMode ~= true then return end
+        local targetSource, itemId = tonumber(args and args[1]), tonumber(args and args[2])
+        local serial, operation = args and args[3], args and args[4]
+        if not targetSource or not itemId or type(serial) ~= 'string'
+            or (operation ~= 'hold' and operation ~= 'release') then
+            print('[WeaponEvidenceTest] usage: WeaponEvidenceTest <source> <itemId> <serial> <hold|release>')
+            return
+        end
+        local session = CoreAdapter.ResolveSession(targetSource)
+        if not session.ok then print('[WeaponEvidenceTest] FAIL session unavailable'); return end
+        local context = { actorSource = targetSource, actorCharacterId = session.value.characterId,
+            characterId = session.value.characterId,
+            correlationId = ('evidence-test:%s:%s'):format(itemId, GetGameTimer()) }
+        local request = { characterId = session.value.characterId,
+            itemInstanceId = itemId, serialNumber = serial }
+        local result = operation == 'hold'
+            and WeaponEvidenceService.Hold(context, request, 'feather-weapons')
+            or WeaponEvidenceService.Release(context, request, 'feather-weapons')
+        print(('[WeaponEvidenceTest] %s operation=%s item=%s serial=%s%s'):format(
+            result.ok and 'PASS' or 'FAIL', operation, itemId, serial,
+            result.ok and '' or (' message=' .. tostring(result.error and result.error.message))))
+    end, true)
+
+RegisterCommand("WeaponEvidenceContractSmokeTest", function(source)
+        if source ~= 0 then return end
+        local contract, capabilities = WeaponEvidenceService.CheckContract(), WeaponAPI.GetCapabilities()
+        local tests = {
+            { 'service available', contract.serviceAvailable },
+            { 'trusted caller configured', contract.trustedCallerConfigured },
+            { 'authorization configured', contract.authorizationConfigured },
+            { 'untrusted caller rejected', contract.untrustedRejected },
+            { 'incomplete request rejected', contract.incompleteRejected },
+            { 'evidence capability ready', capabilities.features.evidenceHolds == true }
+        }
+        local passed = 0
+        for _, test in ipairs(tests) do
+            if test[2] then passed = passed + 1 end
+            print(("[WeaponEvidenceContractSmokeTest] %-30s %s"):format(
+                test[1], test[2] and 'PASS' or 'FAIL'))
+        end
+        print(("[WeaponEvidenceContractSmokeTest] done %d/%d passed (read-only)"):format(passed, #tests))
+    end, true)
 
 RegisterCommand("WeaponReconcile", function(source, args)
     if source ~= 0 then return end

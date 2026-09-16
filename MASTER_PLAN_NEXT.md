@@ -376,6 +376,16 @@ Live validation passed `9/9` after an unequipped drop/pickup round trip for item
 `4889`: ordinary movement remained allowed, evidence and disabled policy cases
 were rejected, and observation health remained at zero failures and zero lease
 violations. Release smoke remained `8/8` with no active slots.
+Portable-container validation passed with `bcc-stashes` for item `13`, serial
+`FW-REVO-6AA9F510-323164-0001`. An equipped deposit was rejected; after
+unequipping, the committed move classified as `deposit` with no observation
+failure or active-lease violation. The stored weapon survived both Weapons and
+Stashes resource restarts, blocked chest pickup while present, and classified
+the return move as `pickup`. Re-equipping restored the same item and serial,
+regular ammunition at `50/6/44`, condition `100`, and zero attachments with an
+exact native total and clip. The generic ownership smoke remained `10/11` only
+because its independent ground-drop prerequisite was not performed after the
+resource restart.
 
 ### Exit gate
 
@@ -403,6 +413,29 @@ violations. Release smoke remained `8/8` with no active slots.
 - Evidence operations retain a single canonical item identity and complete
   audit chain.
 
+### Current foundation evidence
+
+- The append-only `feather_weapon_events` ledger passed its `6/6` read-only
+  contract smoke test. A live item `13` round trip recorded ordered `deposit`
+  and `pickup` facts with serial `FW-REVO-6AA9F510-323164-0001`, exact
+  inventory/character endpoints, and a resolvable current instance.
+- A trusted evidence hold on that same unequipped item committed without
+  changing its identity. Equip and ordinary container movement both failed
+  closed while held. Trusted release restored both operations, and the next
+  storage deposit succeeded. Inspection returned the complete ordered chain:
+  `deposit`, `pickup`, `evidence_hold`, `evidence_release`, `deposit`.
+- Confiscation presentation, officer permissions, evidence-locker selection,
+  and retention policy remain consumers of these contracts and intentionally
+  stay outside Weapons until a law/Admin resource owns those decisions.
+- Fresh issuance and terminal history passed with disposable Cattleman item
+  `64`, serial `FW-REVO-6AAA063C-0263D4-0001`. Inspection first resolved one
+  `issuance` event and the current canonical instance. Trusted exact-item
+  destruction then removed the instance and appended a `destruction` event;
+  subsequent inspection returned `current=false`, `destroyed=true`, and both
+  immutable events with the same item and serial.
+- Final regression remained green: destruction audit `6/6`, provenance
+  contract `6/6`, evidence contract `6/6`, and release contract `8/8`.
+
 ## 11. Phase 7 — Shops, licenses, jobs, and crafting
 
 ### Work
@@ -415,6 +448,37 @@ violations. Release smoke remained `8/8` with no active slots.
 - Define pricing, stock, recipes, and locations outside the core weapon runtime.
 - Add server-owner examples for legal shops, job armories, and restricted
   weapons.
+
+### Current foundation evidence
+
+- Cross-resource issuance now derives the caller from the Cfx runtime, requires
+  a configured trusted resource and allowlisted purpose, and can route through
+  Core action `weapons.issuance.issue` for future license/job/shop policy.
+  The read-only issuance contract passed `7/7`, including untrusted and
+  incomplete-request rejection.
+- The trusted development path issued disposable Cattleman item `65`, serial
+  `FW-REVO-6AAA0D42-206177-0001`, with exactly one durable `issuance` event and
+  the correct target character/inventory. Exact-item destruction then removed
+  the disposable instance, and the release regression remained `8/8`.
+- Durable issuance idempotency passed `9/9`. Two trusted `admin_issue` calls
+  using request ID `idempotency-test-001` returned the same canonical item
+  `66` and serial `FW-REVO-6AAA0FD7-08CED4-0001`; the retry reported
+  `replayed=true`, Inventory contained exactly one instance, and exact-item
+  cleanup succeeded. Non-development issuance now requires a stable request ID
+  and persists pending/committed request state across resource restarts.
+- Issuance request keys are now permanently bound to their original character,
+  weapon definition, and purpose. Strict request-ID validation rejects
+  malformed or oversized keys instead of truncating them; the expanded
+  read-only issuance contract passed `13/13`.
+- Interrupted issuance recovery passed across a real Weapons restart. Request
+  `recovery-restart-001` created Cattleman item `68`, serial
+  `FW-REVO-6AAA1951-5DF238-0001`, then stopped before committing its issuance
+  reservation. Retrying the same request after restart found exactly one
+  canonical metadata match and returned that item with `replayed=true` and
+  `recovered=true`; no duplicate was created. Exact-item cleanup then passed.
+  Requests created during the current process remain non-recoverable while
+  active, preserving concurrent retry rejection, and missing or ambiguous
+  recovery matches fail closed.
 
 ### Exit gate
 

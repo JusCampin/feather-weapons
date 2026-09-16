@@ -6,7 +6,7 @@ lua54 'yes'
 description 'The official weapon system for Feather framework.'
 author 'Feather Framework'
 name 'feather-weapons'
-version '0.10.4'
+version '0.10.5'
 
 shared_scripts {
     'config.lua',
@@ -19,6 +19,7 @@ shared_scripts {
 }
 
 server_scripts {
+    '@oxmysql/lib/MySQL.lua',
     '/server/imports.lua',
     '/server/adapters/core.lua',
     '/server/adapters/inventory.lua',
@@ -31,6 +32,8 @@ server_scripts {
     '/server/services/maintenance.lua',
     '/server/services/repair.lua',
     '/server/services/attachments.lua',
+    '/server/services/provenance.lua',
+    '/server/services/evidence.lua',
     '/server/services/ownership.lua',
     '/server/services/issuance.lua',
     '/server/services/commands.lua',
@@ -55,6 +58,7 @@ files {
 data_file 'WEAPONINFO_FILE_PATCH' '/data/weapon_holsters.meta'
 
 dependencies {
+    'oxmysql',
     'feather-core',
     'feather-character',
     'feather-inventory',
