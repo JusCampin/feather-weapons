@@ -1,0 +1,14 @@
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const source = readFileSync(new URL('../client/main.lua', import.meta.url), 'utf8');
+const start = source.indexOf('-- Pool mode cannot safely let an empty longgun');
+const end = source.indexOf('\nCreateThread(function()', source.indexOf('end)\n', start) + 5);
+assert.ok(start >= 0 && end > start);
+const guard = source.slice(start, end);
+assert.match(guard, /state\.ammoPools\[state\.ammunitionType\].*== 0/);
+assert.match(guard, /state\.nativeAmmoName == other\.nativeAmmoName/);
+assert.match(guard, /other\.ammo or 0\) > 0/);
+assert.match(guard, /SetCurrentPedWeapon.*WEAPON_UNARMED/);
+assert.match(guard, /while LifeStateSuspended\(\)/);
+assert.doesNotMatch(guard, /SetAmmoInClip|SetPedAmmo|GiveAmmo|RPC\.Call/);
+console.log('Empty shared-longgun guard static contract passes; native timing requires live testing.');
