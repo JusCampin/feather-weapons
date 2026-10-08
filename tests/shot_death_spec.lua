@@ -1,12 +1,13 @@
 local command, thread, killed, logs
-local total, tick, state
+local total, tick, state, requestedMode
 local function reset()
     command, thread, killed, logs = nil, nil, 0, {}
     total, tick = 6, 0
     state = {primary = 1, offhand = 12, primaryGeneration = 1, offhandGeneration = 2,
         epoch = 1, restoreGeneration = 1, ammoHash = 10, expected = 6}
     Config = {DevMode = true}
-    FeatherWeaponsClient = {GetShotDeathContext = function()
+    FeatherWeaponsClient = {GetShotDeathContext = function(mode)
+        requestedMode = mode
         local snapshot = {}
         for key, value in pairs(state) do snapshot[key] = value end
         return snapshot
@@ -37,6 +38,11 @@ reset(); command(0, {'2'}); step()
 total = 7; step(); assert(killed == 0)
 reset(); total = 5; command(0, {'2'}); assert(thread == nil and killed == 0)
 reset(); command(0, {'0'}); assert(thread == nil)
+reset(); command(0, {'1', 'longguns'}); assert(requestedMode == 'longguns'); step()
+total = 5; step(); assert(killed == 1)
+reset(); state.selectedHash = 20; command(0, {'1', 'longguns'}); step()
+state.selectedHash = 21; total = 5; step(); assert(killed == 0)
+reset(); command(0, {'1', 'invalid'}); assert(thread == nil)
 reset(); Config.DevMode = false; command = nil
 dofile('client/dev_shot_death.lua'); assert(command == nil)
 io.write('PASS shot-death trigger, cancel, context, timeout, increase, mismatch, args, dev gate\n')

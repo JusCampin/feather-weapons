@@ -4269,7 +4269,23 @@ end)
 
 if Config.DevMode then
     -- Read-only context for the opt-in death timing harness.
-    function FeatherWeaponsClient.GetShotDeathContext()
+    function FeatherWeaponsClient.GetShotDeathContext(mode)
+        if mode == 'longguns' then
+            local shoulder, back = extraSlots.shoulder, extraSlots.back
+            if not shoulder or not back or LifeStateSuspended()
+                or not shoulder.nativeAmmoName
+                or shoulder.nativeAmmoName ~= back.nativeAmmoName then return nil end
+            local selectedOk, selectedHash = GetCurrentPedWeapon(PlayerPedId(), true, 0, true)
+            if not NativeTrue(selectedOk) or (selectedHash ~= joaat(shoulder.nativeWeaponName)
+                and selectedHash ~= joaat(back.nativeWeaponName)) then return nil end
+            return {
+                primary = shoulder.itemInstanceId, offhand = back.itemInstanceId,
+                primaryGeneration = shoulder.generation, offhandGeneration = back.generation,
+                epoch = firearmPoolsEpoch, restoreGeneration = characterRestoreGeneration,
+                ammoHash = joaat(shoulder.nativeAmmoName), selectedHash = selectedHash,
+                expected = (shoulder.ammo or 0) + (back.ammo or 0)
+            }
+        end
         if not equipped or not offhand or LifeStateSuspended()
             or equipped.nativeAmmoName ~= offhand.nativeAmmoName
             or not equipped.nativeAmmoName then return nil end

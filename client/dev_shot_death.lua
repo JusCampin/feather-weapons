@@ -8,14 +8,16 @@ RegisterCommand('weapondeathaftershots', function(_, args)
         return
     end
     local target = tonumber(args[1] or '2')
-    if not target or target % 1 ~= 0 or target < 1 or target > 4 then
-        print('[feather-weapons] usage: weapondeathaftershots [1-4|cancel]')
+    local mode = args[2] or 'sidearms'
+    if not target or target % 1 ~= 0 or target < 1 or target > 4
+        or (mode ~= 'sidearms' and mode ~= 'longguns') then
+        print('[feather-weapons] usage: weapondeathaftershots [1-4|cancel] [sidearms|longguns]')
         return
     end
-    local initial = FeatherWeaponsClient.GetShotDeathContext()
+    local initial = FeatherWeaponsClient.GetShotDeathContext(mode)
     local ped = PlayerPedId()
     if not initial then
-        print('[feather-weapons] shot-death rejected: alive same-ammo pistol pair required')
+        print('[feather-weapons] shot-death rejected: alive same-ammo pair required; longguns mode requires a drawn longgun')
         return
     end
     local before = tonumber(GetPedAmmoByType(ped, initial.ammoHash))
@@ -30,10 +32,10 @@ RegisterCommand('weapondeathaftershots', function(_, args)
         while token == sequence do
             Wait(0)
             if token ~= sequence then return end
-            local current = FeatherWeaponsClient.GetShotDeathContext()
+            local current = FeatherWeaponsClient.GetShotDeathContext(mode)
             local stable = current and PlayerPedId() == ped
             for _, key in ipairs({'primary', 'offhand', 'primaryGeneration', 'offhandGeneration',
-                'epoch', 'restoreGeneration', 'ammoHash'}) do
+                'epoch', 'restoreGeneration', 'ammoHash', 'selectedHash'}) do
                 if not current or current[key] ~= initial[key] then stable = false end
             end
             if not stable or GetGameTimer() >= deadline then
