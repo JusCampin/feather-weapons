@@ -3856,17 +3856,18 @@ end)
 -- RedM cannot keep a reserve visible for two different long-gun hashes that
 -- share an ammunition type. Expose only the selected weapon's reload amount,
 -- then return the native pool to the combined clips when the animation ends.
--- Pool mode cannot safely let an empty longgun reload from another item's
--- escrow. Stop that selection without rewriting clips, totals or ownership.
+-- Empty longguns must not see another item's native reserve. The pool module
+-- tracks hidden escrow and rematerializes the funded clip on switch-back.
 CreateThread(function()
-    local warnedItem
     while true do
         while LifeStateSuspended() do Wait(100) end
         local ped = PlayerPedId()
         local selectedOk, selectedWeapon = GetCurrentPedWeapon(ped, true, 0, false)
         local blocked
         if NativeTrue(selectedOk) and not characterRestoreInFlight
-            and not presentationRestoreInFlight and not inventoryWeaponInFlight then
+            and not presentationRestoreInFlight and not inventoryWeaponInFlight
+            and not firearmPoolsInFlight and not maintenanceBatchInFlight then
+            FeatherFirearmPools.UpdateLonggunWindow(ped, selectedWeapon, WeaponDefinitionCatalog)
             for _, slot in ipairs({ 'shoulder', 'back' }) do
                 local state = extraSlots[slot]
                 local other = extraSlots[slot == 'shoulder' and 'back' or 'shoulder']
@@ -3883,12 +3884,6 @@ CreateThread(function()
         if blocked then
             DisableControlAction(0, joaat('INPUT_RELOAD'), true)
             DisableControlAction(0, joaat('INPUT_ATTACK'), true)
-            SetCurrentPedWeapon(ped, joaat('WEAPON_UNARMED'), true, 0, false, false)
-            HolsterPedWeapons(ped, true, true, true, true)
-            if warnedItem ~= blocked.itemInstanceId then
-                warnedItem = blocked.itemInstanceId
-                Notify('This long gun is empty. Load ammunition into it before drawing; the other gun owns the shared ammunition.')
-            end
         end
         Wait(0)
     end
