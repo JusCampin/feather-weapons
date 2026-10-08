@@ -75,4 +75,24 @@ clips[4] = 1
 capture = assert(FeatherFirearmPools.Capture(1, catalog))
 assert(clips[4] == 0 and capture.reports.offhand.loaded == 0,
     'Empty counterpart stray native clip must be cleared without granting ownership')
-print('Distinct dual firearm per-instance attribution checks passed')
+-- Reproduce death immediately after the last offhand round: approved ownership
+-- may have accepted the primary shot while the final secondary shot is pending.
+-- The shoulder/back reuse fixture has different non-selected clip semantics;
+-- this regression specifically targets the native sidearm pair.
+if catalog.weapons[slots.primary.definitionId].slot == 'sidearm' then
+slots.primary.ammoPools, slots.primary.loaded = {regular = 2, express = 4}, 2
+slots.offhand.ammoPools, slots.offhand.loaded = {regular = 1, express = 0}, 1
+slots.primary.ammunitionType, slots.primary.nativeAmmoName = 'regular', 'regular'
+slots.offhand.ammunitionType, slots.offhand.nativeAmmoName = 'regular', 'regular'
+totals[2], totals[3], activeWeapon = 3, 4, 1
+assert(FeatherFirearmPools.Restore(1, slots, catalog))
+clips[4], totals[2] = 0, 2
+capture = assert(FeatherFirearmPools.Capture(1, catalog))
+assert(capture.reports.primary.pools.regular == 2)
+assert(capture.reports.offhand.pools.regular == 0 and capture.reports.offhand.loaded == 0)
+assert(capture.reports.primary.pools.express == 4, 'Death boundary must preserve inactive pool')
+FeatherFirearmPools.Accept(capture)
+capture = assert(FeatherFirearmPools.Capture(1, catalog))
+assert(capture.reports.offhand.pools.regular == 0, 'Repeated boundary capture cannot double-charge')
+end
+print('Distinct dual firearm attribution and final offhand shot regression passed')

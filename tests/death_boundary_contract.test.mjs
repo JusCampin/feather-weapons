@@ -1,0 +1,10 @@
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const source = readFileSync(new URL('../client/main.lua', import.meta.url), 'utf8');
+assert.match(source, /if dead == true or dead == 1 then SuspendForDeath\(\)/);
+assert.match(source, /if not deathBoundary and LifeStateSuspended\(\)/);
+assert.match(source, /FlushFirearmPools\(callback, deathBoundary\)/);
+assert.match(source, /if firearmPoolsInFlight or maintenanceBatchInFlight then[\s\S]*SetTimeout\(50, drain\)/);
+assert.match(source, /if deathPoolCheckpointPending then[\s\S]*if deathPoolCheckpointFailed then/);
+assert.match(source, /epoch ~= firearmPoolsEpoch or generation ~= characterRestoreGeneration/);
+console.log('Death boundary scheduling/static guards pass; native timing requires live retest.');

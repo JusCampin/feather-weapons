@@ -49,7 +49,8 @@ client_scripts {
     '/client/native_maintenance.lua',
     '/client/native_weapon_coordinator.lua',
     '/client/firearm_pools.lua',
-    '/client/main.lua',
+      '/client/main.lua',
+      '/client/dev_shot_death.lua',
     '/client/native_probe.lua'
 }
 
